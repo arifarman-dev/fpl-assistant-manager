@@ -1,4 +1,5 @@
 import requests
+import pandas as pd
 from config import OPENROUTER_API_KEY, MODEL
 
 
@@ -25,15 +26,25 @@ def format_squad_for_prompt(squad, bank: float) -> str:
     """Format the squad DataFrame into a readable prompt string."""
     lines = [
         f"CURRENT SQUAD (Bank: £{bank}m)",
-        f"{'Name':<18} {'Pos':<5} {'£':<6} {'Form':<6} {'EP Next':<9} {'FDR (next 5 GWs)':<22} {'Status':<8} {'Captain'}",
-        "-" * 90
+        f"{'Name':<18} {'Pos':<5} {'£':<6} {'Form':<6} {'EP':<6} "
+        f"{'xG/90':<7} {'xA/90':<7} {'Chance%':<9} {'FDR':<20} {'Status'} {'News'}",
+        "-" * 110
     ]
     for _, p in squad.iterrows():
-        captain = "✓" if p["is_captain"] else ""
+        captain = " ©" if p.get("is_captain") else ""
+        raw_chance = p.get("chance_of_playing_next_round")
+        chance = f"{raw_chance:.0f}%" if pd.notna(raw_chance) else "100%" \
+            if pd.notna(p.get("chance_of_playing_next_round")) else "100%"
+        xg = f"{p['expected_goals_per_90']:.2f}" \
+            if pd.notna(p.get("expected_goals_per_90")) else "n/a"
+        xa = f"{p['expected_assists_per_90']:.2f}" \
+            if pd.notna(p.get("expected_assists_per_90")) else "n/a"
+        news = p.get("news", "") or ""
+
         lines.append(
-            f"{p['name']:<18} {p['position']:<5} £{p['price']:<5.1f} "
-            f"{p['form']:<6} {p['ep_next']:<9} {p['fdrs']:<22} "
-            f"{p['status']:<8} {captain}"
+            f"{p['name'] + captain:<18} {p['position']:<5} £{p['price']:<5.1f} "
+            f"{p['form']:<6} {p['ep_next']:<6} {xg:<7} {xa:<7} "
+            f"{chance:<9} {p['fdrs']:<20} {p['status']}  {news}"
         )
     return "\n".join(lines)
 
