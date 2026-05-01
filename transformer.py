@@ -136,19 +136,24 @@ def build_recommendation_context(
     bootstrap: dict,
     fixtures: list
 ) -> dict:
-    """
-    Master transformer function. Returns everything the LLM needs.
-    """
     player_df = build_player_dataframe(bootstrap, fixtures)
     squad = get_squad(picks, player_df)
     bank = picks["entry_history"]["bank"] / 10
+
+    # Free transfers available
+    free_transfers = picks["entry_history"].get("event_transfers_cost", 0)
+    # FPL stores free transfers in the picks response
+    active_chip = picks.get("active_chip", None)
+
     candidates = get_transfer_candidates(squad, player_df, bank)
 
     return {
-        "manager":    f"{team_info['player_first_name']} {team_info['player_last_name']}",
-        "team_name":  team_info["name"],
-        "bank":       bank,
-        "squad":      squad,
-        "candidates": candidates,
-        "player_df":  player_df,
+        "manager":        f"{team_info['player_first_name']} {team_info['player_last_name']}",
+        "team_name":      team_info["name"],
+        "bank":           bank,
+        "free_transfers": picks["entry_history"].get("bank", 1),
+        "active_chip":    active_chip,
+        "squad":          squad,
+        "candidates":     candidates,
+        "player_df":      player_df,
     }
