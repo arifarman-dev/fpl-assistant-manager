@@ -225,3 +225,61 @@ def get_recommendation(context: dict, free_transfers: int = 1) -> str:
     data = response.json()
 
     return data["choices"][0]["message"]["content"]
+
+def calculate_hit_value(
+    player_out: str,
+    player_in: str,
+    context: dict
+) -> str:
+    """
+    Ask the LLM to quantify whether a -4 hit is worth it
+    for a specific transfer.
+    """
+    squad = context["squad"]
+    out_data = squad[squad["name"] == player_out].iloc[0]
+
+    all_players = context.get("player_df", pd.DataFrame())
+    in_data = all_players[
+        all_players["name"] == player_in
+    ].iloc[0] if not all_players.empty else None
+
+    prompt = f"""Calculate whether taking a -4 point hit is worth it for this transfer:
+
+OUT: {player_out} — Form: {out_data['form']}, EP Next: {out_data['ep_next']}, 
+     FDR next 5 GWs: {out_data['fdrs']}, Status: {out_data['status']}
+
+IN:  {player_in} — Form: {in_data['form'] if in_data is not None else 'unknown'}, 
+     EP Next: {in_data['ep_next'] if in_data is not None else 'unknown'},
+     FDR next 5 GWs: {in_data['fdrs'] if in_data is not None else 'unknown'}
+
+Provide:
+1. Expected points gained this GW from the transfer
+2. Expected points over next 3 GWs
+3. Breakeven analysis — how many GWs to recover the -4?
+4. Verdict: worth it or not, and why
+
+Be specific with numbers. Format as a brief structured analysis."""
+
+    payload = {
+        "model": MODEL,
+        "messages": [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": prompt}
+        ],
+        "max_tokens": 1000
+    }
+
+    headers = {
+        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+        "Content-Type": "application/json",
+        "HTTP-Referer": "http://localhost",
+    }
+
+    response = requests.post(
+        "https://openrouter.ai/api/v1/chat/completions",
+        json=payload,
+        headers=headers,
+        timeout=30
+    )
+    response.raise_for_status()
+    return response.json()["choices"][0]["message"]["content"]

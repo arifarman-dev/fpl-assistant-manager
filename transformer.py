@@ -157,3 +157,36 @@ def build_recommendation_context(
         "candidates":     candidates,
         "player_df":      player_df,
     }
+
+def find_differentials(
+    player_df: pd.DataFrame,
+    current_gw: int,
+    max_ownership: float = 15.0,
+    min_form: float = 5.0,
+    top_n: int = 10
+) -> pd.DataFrame:
+    """
+    Find high-form, low-ownership players — the differentials
+    top managers are quietly targeting.
+    """
+    diffs = player_df[
+        (player_df["selected_pct"] <= max_ownership) &
+        (player_df["form"] >= min_form) &
+        (player_df["status"] == "a") &
+        (player_df["minutes"] > 0)
+    ].copy()
+
+    diffs["differential_score"] = (
+        diffs["form"] * 0.4 +
+        diffs["ep_next"] * 0.4 +
+        (6 - diffs["avg_fdr"].fillna(3)) * 0.2 -
+        diffs["selected_pct"] * 0.05  # penalise high ownership
+    )
+
+    return diffs.sort_values(
+        "differential_score", ascending=False
+    ).head(top_n)[[
+        "name", "team", "position", "price",
+        "form", "ep_next", "selected_pct", "fdrs",
+        "differential_score"
+    ]]
