@@ -73,17 +73,21 @@ def fetch_all(team_id: int) -> dict:
     picks = get_team_picks(team_id, current_gw)
     print(f"  ✅ GW{current_gw} picks fetched")
 
-    # Auto-detect free transfers
     free_transfers = calculate_free_transfers(picks, team_info, current_gw)
     print(f"  ✅ Free transfers: {free_transfers}")
 
+    chip_status = get_chip_status(team_id)
+    print(f"  ✅ Chips used: {chip_status['used']}")
+    print(f"  ✅ Chips available: {chip_status['available']}")
+
     return {
-        "bootstrap": bootstrap,
-        "fixtures": fixtures,
-        "team_info": team_info,
-        "picks": picks,
-        "current_gw": current_gw,
-        "free_transfers": free_transfers
+        "bootstrap":      bootstrap,
+        "fixtures":       fixtures,
+        "team_info":      team_info,
+        "picks":          picks,
+        "current_gw":     current_gw,
+        "free_transfers": free_transfers,
+        "chip_status":    chip_status
     }
 
 
@@ -142,3 +146,43 @@ def get_transfer_info(team_id: int) -> dict:
     response.raise_for_status()
     transfers = response.json()
     return transfers
+
+def get_chip_status(team_id: int) -> dict:
+    """
+    Fetch which chips have been used and which are still available.
+    FPL chips: wildcard (x2), freehit, bboost, 3xc
+    """
+    response = requests.get(
+        f"{FPL_BASE_URL}/entry/{team_id}/history/",
+        headers=FPL_HEADERS,
+        timeout=10
+    )
+    response.raise_for_status()
+    history = response.json()
+
+    used_chips = []
+    for gw in history.get("chips", []):
+        used_chips.append(gw["name"])
+
+    all_chips = {
+        "wildcard1": "Wildcard 1 (used in first half of season)",
+        "wildcard2": "Wildcard 2 (used in second half of season)",
+        "freehit":   "Free Hit",
+        "bboost":    "Bench Boost",
+        "3xc":       "Triple Captain"
+    }
+
+    available = []
+    used = []
+
+    for chip_key, chip_name in all_chips.items():
+        if chip_key in used_chips:
+            used.append(chip_name)
+        else:
+            available.append(chip_name)
+
+    return {
+        "used": used,
+        "available": available,
+        "raw_used": used_chips
+    }

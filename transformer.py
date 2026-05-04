@@ -89,13 +89,38 @@ def get_transfer_candidates(
     squad: pd.DataFrame,
     player_df: pd.DataFrame,
     bank: float,
+    bootstrap: dict,
     top_n: int = 10
 ) -> dict[str, pd.DataFrame]:
     """
-    For each position, find the top N affordable transfer candidates
-    not already in the squad. Ranked by a weighted score.
-    Excludes unavailable players (injured/suspended).
+    For each position, find top N affordable transfer candidates.
+    Enforces FPL 3-player-per-team rule.
     """
+    # Build player_id -> team_id map
+    id_to_team = {p["id"]: p["team"] for p in bootstrap["elements"]}
+    team_to_short = {t["id"]: t["short_name"] for t in bootstrap["teams"]}
+
+    # Count current squad players per team
+    squad_team_counts = {}
+    for _, p in squad.iterrows():
+        match = [
+            el for el in bootstrap["elements"]
+            if el["web_name"] == p["name"]
+        ]
+        if match:
+            team_id = match[0]["team"]
+            squad_team_counts[team_id] = squad_team_counts.get(team_id, 0) + 1
+
+    # Teams already at the 3-player limit
+    maxed_teams = {
+        tid for tid, count in squad_team_counts.items()
+        if count >= 3
+    }
+
+    if maxed_teams:
+        maxed_names = [team_to_short.get(t, str(t)) for t in maxed_teams]
+        print(f"  ⚠️  3-player limit reached for: {', '.join(maxed_names)}")
+
     squad_ids = set(squad["id"])
     available = player_df[
         (~player_df["id"].isin(squad_ids)) &
@@ -103,12 +128,15 @@ def get_transfer_candidates(
         (player_df["minutes"] > 0)
     ].copy()
 
-    # Weighted score: form and ep_next are the strongest signals,
-    # avg_fdr inverted so lower difficulty = higher score
+    # Apply 3-player-per-team rule
+    # Map player_df ids to team ids
+    available["team_id"] = available["id"].map(id_to_team)
+    available = available[~available["team_id"].isin(maxed_teams)]
+
     available["score"] = (
-        available["form"] * 0.4 +
-        available["ep_next"] * 0.4 +
-        (6 - available["avg_fdr"].fillna(3)) * 0.2
+    available["form"] * 0.45 + 
+    available["ep_next"] * 0.35 + 
+    (6 - available["avg_fdr"].fillna(3)) * 0.20
     )
 
     candidates = {}
@@ -117,7 +145,6 @@ def get_transfer_candidates(
         if pos_players.empty:
             continue
 
-        # Budget: most expensive player in position + bank
         max_price = pos_players["price"].max() + bank
 
         pos_candidates = available[
@@ -139,13 +166,10 @@ def build_recommendation_context(
     player_df = build_player_dataframe(bootstrap, fixtures)
     squad = get_squad(picks, player_df)
     bank = picks["entry_history"]["bank"] / 10
-
-    # Free transfers available
-    free_transfers = picks["entry_history"].get("event_transfers_cost", 0)
-    # FPL stores free transfers in the picks response
     active_chip = picks.get("active_chip", None)
+    candidates = get_transfer_candidates(squad, player_df, bank, bootstrap)
 
-    candidates = get_transfer_candidates(squad, player_df, bank)
+    candidates = get_transfer_candidates(squad, player_df, bank, bootstrap)
 
     return {
         "manager":        f"{team_info['player_first_name']} {team_info['player_last_name']}",

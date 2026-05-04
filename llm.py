@@ -162,7 +162,17 @@ def build_user_prompt(context: dict, free_transfers: int = 1) -> str:
     candidates_text = format_candidates_for_prompt(context["candidates"])
     comparison_text = format_fixture_comparison(context)
 
-    chips = context.get("active_chip", "None")
+    chip_status = context.get("chip_status", {})
+    available_chips = chip_status.get("available", [])
+    used_chips = chip_status.get("used", [])
+
+    chips_text = (
+        f"Chips AVAILABLE (not yet used): "
+        f"{', '.join(available_chips) if available_chips else 'NONE — all chips used'}\n"
+        f"Chips ALREADY USED this season: "
+        f"{', '.join(used_chips) if used_chips else 'None used yet'}"
+    )
+
     injured_count = len(context["squad"][context["squad"]["status"] == "i"])
     doubtful_count = len(context["squad"][context["squad"]["status"] == "d"])
 
@@ -177,8 +187,17 @@ def build_user_prompt(context: dict, free_transfers: int = 1) -> str:
     return f"""Analyse my FPL team and provide a complete gameweek strategy.
 
 Manager: {context['manager']} | Team: {context['team_name']}
-Bank: £{context['bank']}m | Free transfers: {free_transfers} | Active chip: {chips}
+Bank: £{context['bank']}m | Free transfers: {free_transfers}
+{chips_text}
 Urgent: {injured_count} injured, {doubtful_count} doubtful in squad.
+
+IMPORTANT RULES YOU MUST FOLLOW:
+- You cannot recommend more than 3 players from the same team.
+- Only recommend chips listed as AVAILABLE above. If all chips are used, 
+  do not mention chip strategy at all.
+- When recommending DGW players, consider their form and fixture quality,
+  not just the fact they have a double gameweek. A DGW with two hard 
+  fixtures (FDR 4-5) is not necessarily better than a single easy fixture.
 
 {squad_text}
 
@@ -190,12 +209,11 @@ Urgent: {injured_count} injured, {doubtful_count} doubtful in squad.
 
 Please provide:
 1. Squad problems — injuries, poor form, bad upcoming fixtures
-2. Transfer strategy considering DGW/BGW gameweeks ahead — use transfers now, roll, or take a hit?
-3. Specific transfers — prioritise DGW assets if timing is right, with full justification
-4. Chip strategy — which chips to use and in which gameweeks
-5. Captain recommendation for this gameweek with reasoning
-6. Anything else I should know before the deadline"""
-
+2. Transfer strategy — use transfers now, roll, or take a hit?
+3. Specific transfers with full justification referencing stats
+4. Chip strategy — ONLY mention chips listed as available above
+5. Captain recommendation with reasoning
+6. Anything else before the deadline"""
 
 def get_recommendation(context: dict, free_transfers: int = 1) -> str:
     user_prompt = build_user_prompt(context, free_transfers)
@@ -280,6 +298,72 @@ Be specific with numbers. Format as a brief structured analysis."""
         json=payload,
         headers=headers,
         timeout=30
+    )
+    response.raise_for_status()
+    return response.json()["choices"][0]["message"]["content"]
+
+def get_hit_analysis(
+    player_out: pd.Series,
+    player_in: pd.Series,
+    context: dict
+) -> str:
+    """
+    Deep LLM analysis of whether a -4 hit transfer is worth taking.
+    """
+    prompt = f"""A Fantasy Premier League manager is considering taking a -4 point hit 
+for the following transfer. Analyse whether it is worth it.
+
+PLAYER OUT:
+- Name: {player_out['name']}
+- Position: {player_out['position']}
+- Price: £{player_out['price']}m
+- Form: {player_out['form']}
+- EP Next GW: {player_out['ep_next']}
+- Fixtures (next 5 GWs FDR): {player_out['fdrs']}
+- Status: {player_out['status']}
+- News: {player_out.get('news', 'None')}
+
+PLAYER IN:
+- Name: {player_in['name']}
+- Position: {player_in['position']}
+- Price: £{player_in['price']}m
+- Form: {player_in['form']}
+- EP Next GW: {player_in['ep_next']}
+- Fixtures (next 5 GWs FDR): {player_in['fdrs']}
+
+SQUAD CONTEXT:
+- Bank after transfer: £{round(context['bank'] - (float(player_in['price']) - float(player_out['price'])), 1)}m
+- Free transfers available: {context.get('free_transfers', 1)}
+
+Please provide:
+1. Expected points gained this GW from the transfer
+2. Projected points difference over the next 3 GWs based on form and fixtures
+3. Breakeven calculation — how many GWs to recover the -4?
+4. Risk assessment — what could go wrong with this transfer?
+5. Final verdict — take the hit YES or NO, and why
+
+Be specific with numbers. Be direct. One clear recommendation at the end."""
+
+    payload = {
+        "model": MODEL,
+        "messages": [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": prompt}
+        ],
+        "max_tokens": 2000
+    }
+
+    headers = {
+        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+        "Content-Type": "application/json",
+        "HTTP-Referer": "http://localhost",
+    }
+
+    response = requests.post(
+        "https://openrouter.ai/api/v1/chat/completions",
+        json=payload,
+        headers=headers,
+        timeout=60
     )
     response.raise_for_status()
     return response.json()["choices"][0]["message"]["content"]

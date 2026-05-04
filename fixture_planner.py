@@ -1,3 +1,15 @@
+import sys
+import os
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+
+from fetcher import fetch_all
+from transformer import build_recommendation_context
+
+import sys
+import os
+sys.path.insert(0, os.path.abspath(os.path.dirname(__file__)))
+sys.path.insert(0, os.path.join(os.path.abspath(os.path.dirname(__file__)), 'pages'))
+
 import pandas as pd
 from collections import defaultdict
 
