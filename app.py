@@ -7,6 +7,16 @@ from data_enricher import enrich_context
 from llm import get_recommendation
 from fixture_planner import build_season_plan
 
+# Initialise session state keys so they persist across pages
+if "last_team_id" not in st.session_state:
+    st.session_state["last_team_id"] = None
+if "data" not in st.session_state:
+    st.session_state["data"] = None
+if "context" not in st.session_state:
+    st.session_state["context"] = None
+if "recommendation" not in st.session_state:
+    st.session_state["recommendation"] = None
+
 st.set_page_config(
     page_title="FPL Assistant Manager",
     page_icon="⚽",
@@ -34,12 +44,16 @@ st.caption("Enter your FPL team ID in any section to get started.")
 team_id_input = st.text_input(
     "Enter your FPL Team ID",
     placeholder="e.g. 81578",
+    value=str(st.session_state["last_team_id"] or ""),
     help="Find your ID in the URL on fantasy.premierleague.com"
 )
 
 run_button = st.button("Get Transfer Recommendation", type="primary")
 
-if run_button:
+if run_button or (
+    st.session_state.get("last_team_id") and
+    "context" not in st.session_state
+):
 
     if not team_id_input.strip():
         st.error("Please enter a team ID.")
@@ -96,6 +110,10 @@ if run_button:
                 st.write("✅ Recommendation ready")
 
                 status.update(label="✅ Analysis complete!", state="complete")
+
+                # Debug — remove after testing
+            st.write("DEBUG chips available:", data["chip_status"]["available"])
+            st.write("DEBUG chips used:", data["chip_status"]["used"])
 
             # Cache everything
             st.session_state["data"] = data
@@ -285,9 +303,61 @@ if run_button:
             st.warning(f"🟡 **{p['name']}** (£{p['price']}m) — "
                        f"Doubtful | {chance_str} chance | {news}")
 
-    # --- Squad table ---
-    with st.expander("👥 Your Current Squad", expanded=True):
+    # --- Squad tabs ---
+    st.subheader("👥 Your Squad")
+
+    tab_current, tab_optimal = st.tabs([
+        "Current Squad", "Optimal Lineup"
+    ])
+
+    with tab_current:
         render_pitch_view(context["squad"])
+
+    with tab_optimal:
+        from transformer import get_optimal_lineup
+        optimised = get_optimal_lineup(context["squad"])
+
+        # Show swap alerts
+        should_start = optimised[
+            (optimised["optimal_start"] == True) &
+            (optimised["pick_position"] > 11) &
+            (optimised["ep_next"] > 4.0)  # only flag if meaningfully better
+        ]
+        should_bench = optimised[
+            (optimised["optimal_start"] == False) &
+            (optimised["pick_position"] <= 11) &
+            (optimised["ep_next"] < 3.0)  # only flag genuinely poor starters
+        ]
+
+        if not should_start.empty or not should_bench.empty:
+            st.warning(
+                "⚠️ **Lineup change recommended** — "
+                "your current selection is not optimal based on EP"
+            )
+            for _, p in should_start.iterrows():
+                st.success(f"▲ Start **{p['name']}** "
+                            f"(EP: {p['ep_next']}) — currently on bench")
+            for _, p in should_bench.iterrows():
+                st.error(f"▼ Bench **{p['name']}** "
+                            f"(EP: {p['ep_next']}) — currently starting")
+        else:
+            st.success("✅ Your current lineup is already optimal")
+
+        # Build display with optimal pick positions
+        optimised_display = optimised.copy()
+        starters = optimised_display[
+            optimised_display["optimal_start"]
+        ].sort_values("ep_next", ascending=False)
+        bench = optimised_display[
+            ~optimised_display["optimal_start"]
+        ].sort_values("ep_next", ascending=False)
+
+        for i, (idx, _) in enumerate(starters.iterrows()):
+            optimised_display.loc[idx, "pick_position"] = i + 1
+        for i, (idx, _) in enumerate(bench.iterrows()):
+            optimised_display.loc[idx, "pick_position"] = i + 12
+
+        render_pitch_view(optimised_display)
 
         
 

@@ -9,6 +9,10 @@ from transformer import build_recommendation_context, build_player_dataframe
 from data_enricher import enrich_context
 from llm import get_hit_analysis
 
+if "data" not in st.session_state:
+    st.info("👈 Please load your team in the Transfer Hub first.")
+    st.stop()
+
 st.set_page_config(page_title="Hit Calculator", page_icon="🎯")
 
 st.title("🎯 Hit Calculator")

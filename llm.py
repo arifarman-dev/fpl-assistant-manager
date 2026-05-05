@@ -10,20 +10,27 @@ Key definitions:
 - ep_next: FPL's predicted points for the next gameweek.
 - FDR: Fixture Difficulty Rating 1-5. 1-2 = easy, 3 = moderate, 4-5 = hard.
 - Status: "a" = available, "d" = doubtful, "i" = injured, "s" = suspended.
-- Rolling a transfer: choosing NOT to transfer this week, banking the free transfer 
-  for next week (max 2 banked). Worth doing if no urgent need this week but 
-  great targets exist for upcoming gameweeks.
+- Rolling a transfer: choosing NOT to transfer this week, banking the free transfer
+  for next week (max 2 banked).
 - Taking a hit: making an extra transfer beyond your free allocation, costing 4 points.
   Only worth it if the player gained is expected to outscore the replacement by 4+ points.
 
+CRITICAL GROUNDING RULES — you must follow these without exception:
+- Only reference players, stats, and fixtures explicitly provided in the data below.
+- Do not invent statistics, ownership percentages, or fixture details not in the prompt.
+- Do not reference real-world match results, manager decisions, or news 
+  unless it appears in the 'news' field of the data provided.
+- If you are uncertain about a claim, do not make it.
+- Every recommendation must cite a specific number from the data provided.
+
 Your responsibilities:
 1. Identify urgent problems in the squad (injuries, poor form, bad fixtures).
-2. Compare the manager's players against available candidates across the NEXT 5 GAMEWEEKS,
-   not just the immediate one. Flag if rolling a transfer makes more sense than acting now.
-3. Recommend whether to: use free transfer(s) now, roll transfer(s), or take a hit.
+2. Compare the manager's players against available candidates across 
+   the next 5 gameweeks — not just the immediate one.
+3. Recommend whether to use free transfers, roll them, or take a hit.
 4. Suggest captain pick from the current squad.
 5. Only recommend players from the candidate list provided.
-6. Be direct and confident. Reference specific numbers."""
+6. Be direct and confident. Reference specific numbers from the data."""
 
 
 def format_squad_for_prompt(squad, bank: float) -> str:
@@ -110,9 +117,7 @@ def format_fixture_comparison(context: dict) -> str:
     return "\n".join(lines)
 
 def format_season_plan_for_prompt(season_plan: dict, team_map: dict) -> str:
-    """Format the season plan into a readable section for the LLM prompt."""
-    lines = ["SEASON FIXTURE PLAN — Remaining gameweeks:"]
-    lines.append("(DGW = Double Gameweek, BGW = Blank Gameweek)\n")
+    lines = ["SEASON FIXTURE PLAN (remaining GWs with DGW/BGW only):"]
 
     bgw_dgw = season_plan["bgw_dgw"]
     squad_analysis = season_plan["squad_gw_analysis"]
@@ -121,9 +126,14 @@ def format_season_plan_for_prompt(season_plan: dict, team_map: dict) -> str:
 
     for gw in sorted(bgw_dgw.keys()):
         info = bgw_dgw[gw]
-        squad_info = squad_analysis.get(gw, {})
 
+        # Only include GWs that have something noteworthy
+        if not info["doubles"] and not info["blanks"]:
+            continue
+
+        squad_info = squad_analysis.get(gw, {})
         flags = []
+
         if info["doubles"]:
             double_teams = [team_map.get(t, str(t)) for t in info["doubles"]]
             flags.append(f"DGW: {', '.join(double_teams)}")
@@ -131,27 +141,23 @@ def format_season_plan_for_prompt(season_plan: dict, team_map: dict) -> str:
             blank_teams = [team_map.get(t, str(t)) for t in info["blanks"]]
             flags.append(f"BGW: {', '.join(blank_teams)}")
 
-        flag_str = " | ".join(flags) if flags else "Normal"
-        lines.append(f"GW{gw}: {flag_str}")
+        lines.append(f"GW{gw}: {' | '.join(flags)}")
 
         if squad_info.get("doubles"):
-            lines.append(f"  YOUR players doubling: "
-                        f"{', '.join(squad_info['doubles'])}")
+            lines.append(f"  Your doublers: {', '.join(squad_info['doubles'])}")
         if squad_info.get("blanks"):
-            lines.append(f"  YOUR players blanking: "
-                        f"{', '.join(squad_info['blanks'])}")
+            lines.append(f"  Your blankers: {', '.join(squad_info['blanks'])}")
 
         if gw in dgw_targets and dgw_targets[gw]:
-            top_targets = dgw_targets[gw][:3]
+            top3 = dgw_targets[gw][:3]
             target_str = ", ".join(
-                f"{t['name']} ({t['team']}, £{t['price']}m, "
-                f"form {t['form']})"
-                for t in top_targets
+                f"{t['name']} ({t['team']}, £{t['price']}m)"
+                for t in top3
             )
-            lines.append(f"  DGW targets to consider: {target_str}")
+            lines.append(f"  Targets: {target_str}")
 
     if chip_windows:
-        lines.append("\nCHIP DEPLOYMENT SUGGESTIONS:")
+        lines.append("\nCHIP WINDOWS:")
         for c in chip_windows:
             lines.append(f"  GW{c['gw']}: {c['chip']} — {c['reason']}")
 
@@ -191,13 +197,12 @@ Bank: £{context['bank']}m | Free transfers: {free_transfers}
 {chips_text}
 Urgent: {injured_count} injured, {doubtful_count} doubtful in squad.
 
-IMPORTANT RULES YOU MUST FOLLOW:
-- You cannot recommend more than 3 players from the same team.
-- Only recommend chips listed as AVAILABLE above. If all chips are used, 
-  do not mention chip strategy at all.
-- When recommending DGW players, consider their form and fixture quality,
-  not just the fact they have a double gameweek. A DGW with two hard 
-  fixtures (FDR 4-5) is not necessarily better than a single easy fixture.
+IMPORTANT RULES:
+- Maximum 3 players from the same club.
+- Only recommend chips listed as AVAILABLE. If none available, skip chip section entirely.
+- When recommending DGW players, consider form and fixture quality, not just the double.
+- Do NOT include a Starting XI or lineup selection section — this is handled separately.
+- Keep the response concise. No unnecessary closing remarks or motivational comments.
 
 {squad_text}
 
@@ -207,13 +212,13 @@ IMPORTANT RULES YOU MUST FOLLOW:
 
 {season_text}
 
-Please provide:
-1. Squad problems — injuries, poor form, bad upcoming fixtures
+Please provide ONLY these sections:
+1. Squad problems — injuries, poor form, bad fixtures
 2. Transfer strategy — use transfers now, roll, or take a hit?
-3. Specific transfers with full justification referencing stats
-4. Chip strategy — ONLY mention chips listed as available above
-5. Captain recommendation with reasoning
-6. Anything else before the deadline"""
+3. Specific transfers with justification referencing stats
+4. Chip strategy — ONLY mention chips listed as available
+5. Captain recommendation with reasoning"""
+
 
 def get_recommendation(context: dict, free_transfers: int = 1) -> str:
     user_prompt = build_user_prompt(context, free_transfers)
@@ -224,7 +229,7 @@ def get_recommendation(context: dict, free_transfers: int = 1) -> str:
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": user_prompt}
         ],
-        "max_tokens": 8000
+        "max_tokens": 3000
     }
 
     headers = {
@@ -284,7 +289,7 @@ Be specific with numbers. Format as a brief structured analysis."""
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": prompt}
         ],
-        "max_tokens": 1000
+        "max_tokens": 800
     }
 
     headers = {
@@ -350,7 +355,58 @@ Be specific with numbers. Be direct. One clear recommendation at the end."""
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": prompt}
         ],
-        "max_tokens": 2000
+        "max_tokens": 1500
+    }
+
+    headers = {
+        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+        "Content-Type": "application/json",
+        "HTTP-Referer": "http://localhost",
+    }
+
+    response = requests.post(
+        "https://openrouter.ai/api/v1/chat/completions",
+        json=payload,
+        headers=headers,
+        timeout=60
+    )
+    response.raise_for_status()
+    return response.json()["choices"][0]["message"]["content"]
+
+def get_differential_insight(diffs: pd.DataFrame, current_gw: int) -> str:
+    """
+    Ask the LLM to give a brief, punchy insight on the top differentials.
+    No stats dumping — just the most interesting findings.
+    """
+    # Format top 10 for the prompt
+    top = diffs.head(10)
+    players_text = "\n".join(
+        f"- {row['name']} ({row['team']}, {row['position']}, "
+        f"£{row['price']}m) | Form: {row['form']} | "
+        f"EP Next: {row['ep_next']} | Owned: {row['selected_pct']}% | "
+        f"Fixtures: {row['fdrs']}"
+        for _, row in top.iterrows()
+    )
+
+    prompt = f"""You are analysing FPL differential picks for GW{current_gw}.
+These are high-form, low-ownership players most managers are missing.
+
+{players_text}
+
+Give a punchy 2-paragraph maximum insight:
+1. The single most compelling differential and exactly why (specific numbers)
+2. One to be cautious about despite good numbers
+
+Be direct and concise. Maximum 150 words total. 
+Write like a confident FPL analyst giving quick advice before a deadline."""
+
+    payload = {
+        "model": MODEL,
+        "messages": [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": prompt}
+        ],
+        "max_tokens": 800
     }
 
     headers = {

@@ -150,7 +150,7 @@ def get_transfer_candidates(
         pos_candidates = available[
             (available["position"] == position) &
             (available["price"] <= max_price)
-        ].sort_values("score", ascending=False).head(top_n)
+        ].sort_values("score", ascending=False).head(5)  # was 10
 
         candidates[position] = pos_candidates
 
@@ -214,3 +214,87 @@ def find_differentials(
         "form", "ep_next", "selected_pct", "fdrs",
         "differential_score"
     ]]
+
+def get_optimal_lineup(squad: pd.DataFrame) -> pd.DataFrame:
+    """
+    Determine the optimal starting XI from the current squad.
+    
+    Rules:
+    - 1 GK
+    - Min 3 DEF, max 5 DEF
+    - Min 2 FWD, max 3 FWD  
+    - Min 2 MID, max 5 MID
+    - Maximise total EP of starting XI
+    - Injured/unavailable players cannot start
+    """
+    # Filter out unavailable players
+    available = squad[squad["status"] != "i"].copy()
+    
+    # Sort by ep_next descending within each position
+    gks  = available[available["position"] == "GK"].sort_values(
+        "ep_next", ascending=False
+    )
+    defs = available[available["position"] == "DEF"].sort_values(
+        "ep_next", ascending=False
+    )
+    mids = available[available["position"] == "MID"].sort_values(
+        "ep_next", ascending=False
+    )
+    fwds = available[available["position"] == "FWD"].sort_values(
+        "ep_next", ascending=False
+    )
+
+    # Start with minimums
+    starting_gk   = gks.head(1)
+    starting_defs = defs.head(3)
+    starting_mids = mids.head(2)
+    starting_fwds = fwds.head(2)
+
+    # Remaining players to fill the last 3 spots
+    used_ids = set(
+        starting_gk["id"].tolist() +
+        starting_defs["id"].tolist() +
+        starting_mids["id"].tolist() +
+        starting_fwds["id"].tolist()
+    )
+
+    remaining = available[~available["id"].isin(used_ids)].sort_values(
+        "ep_next", ascending=False
+    )
+
+    # Fill remaining 3 spots respecting formation limits
+    extra_starters = []
+    current_defs = len(starting_defs)
+    current_mids = len(starting_mids)
+    current_fwds = len(starting_fwds)
+
+    for _, player in remaining.iterrows():
+        if len(extra_starters) >= 3:
+            break
+        pos = player["position"]
+        if pos == "DEF" and current_defs < 5:
+            extra_starters.append(player)
+            current_defs += 1
+        elif pos == "MID" and current_mids < 5:
+            extra_starters.append(player)
+            current_mids += 1
+        elif pos == "FWD" and current_fwds < 3:
+            extra_starters.append(player)
+            current_fwds += 1
+
+    if extra_starters:
+        extra_df = pd.DataFrame(extra_starters)
+    else:
+        extra_df = pd.DataFrame()
+
+    starters = pd.concat([
+        starting_gk, starting_defs,
+        starting_mids, starting_fwds,
+        extra_df
+    ]).drop_duplicates(subset=["id"])
+
+    # Mark starters vs bench
+    squad = squad.copy()
+    squad["optimal_start"] = squad["id"].isin(starters["id"].tolist())
+
+    return squad
