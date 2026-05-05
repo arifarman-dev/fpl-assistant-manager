@@ -5,46 +5,74 @@ from config import FPL_HEADERS
 POSITION_MAP = {1: "GK", 2: "DEF", 3: "MID", 4: "FWD"}
 
 
-def build_fixture_difficulty(fixtures: list, next_n_gws: int = 5) -> dict[int, list[int]]:
+def build_fixture_difficulty(fixtures: list, next_n_gws: int = 5) -> dict[int, list[tuple]]:
     """
-    Build a dict mapping team_id -> list of FDR ratings for next N gameweeks.
-    Only includes unfinished fixtures.
+    Build a dict mapping team_id -> list of (gw, fdr, opponent_id) tuples
+    for the next N gameweeks. Only includes unfinished fixtures.
+    DGW teams will have two entries for the same GW.
     """
     upcoming = [f for f in fixtures if not f["finished"] and f["event"] is not None]
     upcoming_sorted = sorted(upcoming, key=lambda x: x["event"])
 
     difficulty = {}
     for fixture in upcoming_sorted:
-        home_team = fixture["team_h"]
-        away_team = fixture["team_a"]
-        home_fdr = fixture["team_h_difficulty"]
-        away_fdr = fixture["team_a_difficulty"]
+        ht  = fixture["team_h"]
+        at  = fixture["team_a"]
+        gw  = fixture["event"]
+        h_fdr = fixture["team_h_difficulty"]
+        a_fdr = fixture["team_a_difficulty"]
 
-        if home_team not in difficulty:
-            difficulty[home_team] = []
-        if away_team not in difficulty:
-            difficulty[away_team] = []
+        if ht not in difficulty:
+            difficulty[ht] = []
+        if at not in difficulty:
+            difficulty[at] = []
 
-        if len(difficulty[home_team]) < next_n_gws:
-            difficulty[home_team].append(home_fdr)
-        if len(difficulty[away_team]) < next_n_gws:
-            difficulty[away_team].append(away_fdr)
+        if len(difficulty[ht]) < next_n_gws:
+            difficulty[ht].append((gw, h_fdr, at))
+        if len(difficulty[at]) < next_n_gws:
+            difficulty[at].append((gw, a_fdr, ht))
 
     return difficulty
 
 
+def weighted_avg_fdr(fdrs: list) -> float:
+    """
+    Compute a fixture-run score weighting the immediate gameweek most heavily,
+    tapering off for later weeks.
+
+    Rationale: the next fixture is the most actionable for transfer decisions.
+    Later fixtures matter but shouldn't override an immediately terrible fixture.
+
+    Weights: GW1=0.35, GW2=0.25, GW3=0.20, GW4=0.12, GW5=0.08
+    If fewer than 5 GWs available, weights are renormalised.
+    """
+    weights = [0.35, 0.25, 0.20, 0.12, 0.08]
+    if not fdrs:
+        return 3.0  # neutral fallback
+    w = weights[:len(fdrs)]
+    total_w = sum(w)
+    return round(sum(f * wt for f, wt in zip(fdrs, w)) / total_w, 2)
+
+
 def build_player_dataframe(bootstrap: dict, fixtures: list) -> pd.DataFrame:
     """
-    Build a clean DataFrame of all 830 players with relevant stats.
+    Build a clean DataFrame of all players with relevant stats.
     """
     difficulty = build_fixture_difficulty(fixtures, next_n_gws=5)
     team_map = {t["id"]: t["short_name"] for t in bootstrap["teams"]}
 
     rows = []
     for p in bootstrap["elements"]:
-        fdrs = difficulty.get(p["team"], [])
-        avg_fdr = round(sum(fdrs) / len(fdrs), 2) if fdrs else None
-        fdr_str = " / ".join(str(d) for d in fdrs) if fdrs else "n/a"
+        fix_tuples = difficulty.get(p["team"], [])  # list of (gw, fdr, opp_id)
+        fdrs_only  = [fdr for (_, fdr, _) in fix_tuples]
+        avg_fdr    = weighted_avg_fdr(fdrs_only)
+
+        # Build labelled string: "GW36 vs BRE(3) / GW36 vs CRY(3) / GW37 vs BOU(4)"
+        fdr_parts = []
+        for (gw, fdr, opp_id) in fix_tuples:
+            opp = team_map.get(opp_id, "?")
+            fdr_parts.append(f"GW{gw} vs {opp}({fdr})")
+        fdr_str = " / ".join(fdr_parts) if fdr_parts else "n/a"
 
         rows.append({
             "id":               p["id"],
@@ -64,8 +92,7 @@ def build_player_dataframe(bootstrap: dict, fixtures: list) -> pd.DataFrame:
             "avg_fdr":          avg_fdr,
         })
 
-    df = pd.DataFrame(rows)
-    return df
+    return pd.DataFrame(rows)
 
 
 def get_squad(picks: dict, player_df: pd.DataFrame) -> pd.DataFrame:
@@ -90,11 +117,14 @@ def get_transfer_candidates(
     player_df: pd.DataFrame,
     bank: float,
     bootstrap: dict,
+    elo_map: dict = None,
     top_n: int = 10
 ) -> dict[str, pd.DataFrame]:
     """
     For each position, find top N affordable transfer candidates.
     Enforces FPL 3-player-per-team rule.
+    Uses opponent Elo (when available) for a more accurate fixture difficulty
+    score than FDR alone — Arsenal FDR=4 is much harder than Spurs FDR=4.
     """
     # Build player_id -> team_id map
     id_to_team = {p["id"]: p["team"] for p in bootstrap["elements"]}
@@ -122,10 +152,15 @@ def get_transfer_candidates(
         print(f"  ⚠️  3-player limit reached for: {', '.join(maxed_names)}")
 
     squad_ids = set(squad["id"])
+
+    # Minimum minutes: ~900 = roughly 10 full games played this season.
+    # Filters out pure rotation/bench players who rarely start.
+    MIN_MINUTES = 900
+
     available = player_df[
         (~player_df["id"].isin(squad_ids)) &
         (player_df["status"] == "a") &
-        (player_df["minutes"] > 0)
+        (player_df["minutes"] >= MIN_MINUTES)
     ].copy()
 
     # Apply 3-player-per-team rule
@@ -133,11 +168,58 @@ def get_transfer_candidates(
     available["team_id"] = available["id"].map(id_to_team)
     available = available[~available["team_id"].isin(maxed_teams)]
 
-    available["score"] = (
-    available["form"] * 0.45 + 
-    available["ep_next"] * 0.35 + 
-    (6 - available["avg_fdr"].fillna(3)) * 0.20
-    )
+    # starts_per_90 from playerstats is merged in after enrichment,
+    # but scoring happens before enrichment. Use season minutes as a
+    # rotation proxy: penalise players with fewer total minutes.
+    minutes_factor = (available["minutes"].clip(upper=2700) / 2700)
+
+    if elo_map:
+        # Elo-adjusted fixture difficulty: use opponent Elo normalised to 1-5 scale.
+        # Elo range in PL ~1650-2060. Map to difficulty: higher opp Elo = harder.
+        # We use the NEXT fixture's opponent (first in fdrs string) for immediate impact,
+        # plus a weighted average across all fixtures using opponent Elo.
+        # Since we don't have per-fixture opponent Elo here, use avg_fdr as fallback
+        # but scale it using the team's own Elo context.
+        # Better: rebuild a per-player elo_difficulty from the fixture tuples.
+        # We need the difficulty dict — rebuild it from player team mapping.
+        id_to_team_short = {
+            p["id"]: next((t["short_name"] for t in bootstrap["teams"] if t["id"] == p["team"]), "UNK")
+            for p in bootstrap["elements"]
+        }
+        # Build team_short -> list of opponent Elos from fixture data
+        # We'll compute an elo-weighted difficulty per player
+        elo_min, elo_max = 1650, 2060
+
+        def elo_to_fdr_scale(opp_elo: float) -> float:
+            """Normalise opponent Elo to 1-5 difficulty scale."""
+            return 1 + 4 * (opp_elo - elo_min) / (elo_max - elo_min)
+
+        # Get fixture tuples from player_df — we stored fdrs as a string,
+        # but we need the raw tuples. Re-derive from bootstrap fixture difficulty.
+        # Use avg_fdr as proxy but adjust: scale by whether team faces top-6 Elo sides.
+        # Simpler: use avg_fdr but add a penalty if the team's first opponent is top-4 Elo.
+        top4_elo_teams = {name for name, elo in elo_map.items() if elo >= 1900}
+
+        def elo_adjusted_score(row):
+            base = row["form"] * 0.38 + row["ep_next"] * 0.32 + (6 - row["avg_fdr"]) * 0.20 + minutes_factor[row.name] * 0.10
+            # Penalise if first fixture is against a top-4 Elo team
+            fdrs_str = row["fdrs"]
+            if fdrs_str and fdrs_str != "n/a":
+                first_fix = fdrs_str.split("/")[0].strip()  # e.g. "GW36 vs ARS(4)"
+                for top_team in top4_elo_teams:
+                    if top_team in first_fix:
+                        base -= 0.15  # meaningful penalty for facing elite opposition immediately
+                        break
+            return base
+
+        available["score"] = available.apply(elo_adjusted_score, axis=1)
+    else:
+        available["score"] = (
+            available["form"] * 0.38 +
+            available["ep_next"] * 0.32 +
+            (6 - available["avg_fdr"].fillna(3)) * 0.20 +
+            minutes_factor * 0.10
+        )
 
     candidates = {}
     for position in ["GK", "DEF", "MID", "FWD"]:
@@ -167,19 +249,28 @@ def build_recommendation_context(
     squad = get_squad(picks, player_df)
     bank = picks["entry_history"]["bank"] / 10
     active_chip = picks.get("active_chip", None)
-    candidates = get_transfer_candidates(squad, player_df, bank, bootstrap)
 
-    candidates = get_transfer_candidates(squad, player_df, bank, bootstrap)
+    # Fetch Elo map for opponent-quality-adjusted scoring
+    elo_map = {}
+    try:
+        import requests as _req
+        BASE = "https://raw.githubusercontent.com/olbauday/FPL-Core-Insights/main/data/2025-2026"
+        import pandas as _pd
+        teams_df = _pd.read_csv(f"{BASE}/teams.csv")
+        elo_map = dict(zip(teams_df["short_name"], teams_df["elo"]))
+    except Exception:
+        pass
+
+    candidates = get_transfer_candidates(squad, player_df, bank, bootstrap, elo_map=elo_map)
 
     return {
-        "manager":        f"{team_info['player_first_name']} {team_info['player_last_name']}",
-        "team_name":      team_info["name"],
-        "bank":           bank,
-        "free_transfers": picks["entry_history"].get("bank", 1),
-        "active_chip":    active_chip,
-        "squad":          squad,
-        "candidates":     candidates,
-        "player_df":      player_df,
+        "manager":     f"{team_info['player_first_name']} {team_info['player_last_name']}",
+        "team_name":   team_info["name"],
+        "bank":        bank,
+        "active_chip": active_chip,
+        "squad":       squad,
+        "candidates":  candidates,
+        "player_df":   player_df,
     }
 
 def find_differentials(

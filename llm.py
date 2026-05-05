@@ -9,6 +9,8 @@ Key definitions:
 - Form: average FPL points per match over last 30 days. Higher is better.
 - ep_next: FPL's predicted points for the next gameweek.
 - FDR: Fixture Difficulty Rating 1-5. 1-2 = easy, 3 = moderate, 4-5 = hard.
+- Win%: bookmaker-implied probability that the player's team wins their next match. Higher = better attacking/clean sheet potential.
+- O2.5%: implied probability of over 2.5 goals in the match. High = good for attackers, bad for defenders/GKs.
 - Status: "a" = available, "d" = doubtful, "i" = injured, "s" = suspended.
 - Rolling a transfer: choosing NOT to transfer this week, banking the free transfer
   for next week (max 2 banked).
@@ -23,13 +25,27 @@ CRITICAL GROUNDING RULES — you must follow these without exception:
 - If you are uncertain about a claim, do not make it.
 - Every recommendation must cite a specific number from the data provided.
 
+CRITICAL TRANSFER RULES — these are hard FPL game rules, never break them:
+- A goalkeeper can ONLY be replaced by another goalkeeper. Never suggest GK → outfield or outfield → GK.
+- A defender can ONLY be replaced by another defender.
+- A midfielder can ONLY be replaced by another midfielder.
+- A forward can ONLY be replaced by another forward.
+- Candidates are already filtered by position — only recommend players from the matching position section.
+- Evaluate the full 5-GW FDR run when comparing candidates. A single easy fixture followed by 4 hard ones is NOT a good transfer target. Prioritise players with a good run across GWs 2-5, not just GW1.
+
+CRITICAL CAPTAIN RULES:
+- The captain must be a player already in the squad (not a transfer target).
+- When describing a player's fixture, state their OPPONENT — not their own team name.
+  Example: "Haaland (MCI) faces WHU" — NOT "Haaland plays Manchester City".
+- A DGW means the player's team plays TWICE in that gameweek, against two different opponents.
+
 Your responsibilities:
 1. Identify urgent problems in the squad (injuries, poor form, bad fixtures).
 2. Compare the manager's players against available candidates across 
    the next 5 gameweeks — not just the immediate one.
 3. Recommend whether to use free transfers, roll them, or take a hit.
 4. Suggest captain pick from the current squad.
-5. Only recommend players from the candidate list provided.
+5. Only recommend players from the candidate list provided, matched by position.
 6. Be direct and confident. Reference specific numbers from the data."""
 
 
@@ -38,8 +54,8 @@ def format_squad_for_prompt(squad, bank: float) -> str:
     lines = [
         f"CURRENT SQUAD (Bank: £{bank}m)",
         f"{'Name':<18} {'Pos':<5} {'£':<6} {'Form':<6} {'EP':<6} "
-        f"{'xG/90':<7} {'xA/90':<7} {'Chance%':<9} {'FDR':<20} {'Status'} {'News'}",
-        "-" * 110
+        f"{'xG/90':<7} {'xA/90':<7} {'Chance%':<9} {'Fixtures (GW vs OPP(FDR))':<45} {'Status'} {'News'}",
+        "-" * 125
     ]
     for _, p in squad.iterrows():
         captain = " ©" if p.get("is_captain") else ""
@@ -55,7 +71,7 @@ def format_squad_for_prompt(squad, bank: float) -> str:
         lines.append(
             f"{p['name'] + captain:<18} {p['position']:<5} £{p['price']:<5.1f} "
             f"{p['form']:<6} {p['ep_next']:<6} {xg:<7} {xa:<7} "
-            f"{chance:<9} {p['fdrs']:<20} {p['status']}  {news}"
+            f"{chance:<9} {p['fdrs']:<45} {p['status']}  {news}"
         )
     return "\n".join(lines)
 
@@ -68,13 +84,17 @@ def format_candidates_for_prompt(candidates: dict) -> str:
             continue
         lines.append(f"\n{position}:")
         lines.append(
-            f"  {'Name':<18} {'Team':<6} {'£':<6} {'Form':<6} {'EP Next':<9} {'FDR (next 5 GWs)':<25} {'Score'}"
+            f"  {'Name':<18} {'Team':<6} {'£':<6} {'Form':<6} {'EP Next':<9} "
+            f"{'Fixtures (GW vs OPP(FDR))':<40} {'Win%':<6} {'O2.5%':<7} {'Score'}"
         )
-        lines.append("  " + "-" * 80)
+        lines.append("  " + "-" * 105)
         for _, p in df.iterrows():
+            win_prob = f"{p['win_prob']:.0f}%" if pd.notna(p.get('win_prob')) else "n/a"
+            over25 = f"{p['over25_prob']:.0f}%" if pd.notna(p.get('over25_prob')) else "n/a"
             lines.append(
                 f"  {p['name']:<18} {p['team']:<6} £{p['price']:<5.1f} "
-                f"{p['form']:<6} {p['ep_next']:<9} {p['fdrs']:<25} {p['score']:.2f}"
+                f"{p['form']:<6} {p['ep_next']:<9} {p['fdrs']:<40} "
+                f"{win_prob:<6} {over25:<7} {p['score']:.2f}"
             )
     return "\n".join(lines)
 
@@ -83,6 +103,7 @@ def format_fixture_comparison(context: dict) -> str:
     """
     Compare your weakest players directly against top candidates
     across the next 5 gameweeks. Helps LLM reason about rolling transfers.
+    Only shows same-position candidates — cross-position transfers are not allowed.
     """
     squad = context["squad"]
     candidates = context["candidates"]
@@ -96,12 +117,12 @@ def format_fixture_comparison(context: dict) -> str:
     if weak.empty:
         return ""
 
-    lines = ["FIXTURE COMPARISON — Weak squad players vs top candidates:"]
-    lines.append("(Use this to judge whether to act now or roll transfer)\n")
+    lines = ["FIXTURE COMPARISON — Weak squad players vs same-position candidates:"]
+    lines.append("(Transfers are position-locked: only same-position swaps are valid)\n")
 
     for _, player in weak.iterrows():
         pos = player["position"]
-        lines.append(f"YOUR PLAYER:  {player['name']:<18} {pos} "
+        lines.append(f"YOUR {pos}:    {player['name']:<18} "
                      f"£{player['price']} | Form: {player['form']} | "
                      f"EP: {player['ep_next']} | FDR: {player['fdrs']} "
                      f"| Status: {player['status']}")
@@ -109,9 +130,11 @@ def format_fixture_comparison(context: dict) -> str:
         if pos in candidates and not candidates[pos].empty:
             top3 = candidates[pos].head(3)
             for _, cand in top3.iterrows():
-                lines.append(f"  CANDIDATE:  {cand['name']:<18} {pos} "
+                lines.append(f"  {pos} CANDIDATE: {cand['name']:<18} "
                              f"£{cand['price']} | Form: {cand['form']} | "
                              f"EP: {cand['ep_next']} | FDR: {cand['fdrs']}")
+        else:
+            lines.append(f"  No {pos} candidates available within budget.")
         lines.append("")
 
     return "\n".join(lines)
@@ -199,8 +222,10 @@ Urgent: {injured_count} injured, {doubtful_count} doubtful in squad.
 
 IMPORTANT RULES:
 - Maximum 3 players from the same club.
+- Transfers are POSITION-LOCKED: GK out → GK in only. DEF out → DEF in only. MID out → MID in only. FWD out → FWD in only. Never suggest cross-position transfers.
+- Only recommend players from the TRANSFER CANDIDATES section, matched to the correct position block.
+- When choosing between candidates, evaluate the FULL 5-GW fixture run in the FDR column — not just the next gameweek. A player with FDR 1 this week but 5/5/5 after is a liability. Prefer players with consistently low FDR across GWs 2-5.
 - Only recommend chips listed as AVAILABLE. If none available, skip chip section entirely.
-- When recommending DGW players, consider form and fixture quality, not just the double.
 - Do NOT include a Starting XI or lineup selection section — this is handled separately.
 - Keep the response concise. No unnecessary closing remarks or motivational comments.
 
@@ -212,12 +237,25 @@ IMPORTANT RULES:
 
 {season_text}
 
-Please provide ONLY these sections:
-1. Squad problems — injuries, poor form, bad fixtures
-2. Transfer strategy — use transfers now, roll, or take a hit?
-3. Specific transfers with justification referencing stats
-4. Chip strategy — ONLY mention chips listed as available
-5. Captain recommendation with reasoning"""
+Please provide ONLY these sections. Use exactly this format — each section header on its own line, followed by the content, followed by "---" on its own line:
+
+**1. Squad problems**
+- [one bullet per player with an issue: name, problem, stat]
+- [...]
+---
+**2. Transfer strategy**
+[A short paragraph: state clearly whether to use transfers now, roll, or take a hit, and the overall reasoning.]
+---
+**3. Specific transfers**
+- [PLAYER OUT (POS) → PLAYER IN (POS) — one sentence justification with stats]
+- [...]
+---
+**4. Chip strategy**
+[ONLY mention chips listed as AVAILABLE. If none available, write: No chips available this season.]
+---
+**5. Captain pick**
+[Name, EP, and their team's next opponent from the FDR column. Do NOT say a player plays against their own team.]
+---"""
 
 
 def get_recommendation(context: dict, free_transfers: int = 1) -> str:
@@ -312,42 +350,18 @@ def get_hit_analysis(
     player_in: pd.Series,
     context: dict
 ) -> str:
-    """
-    Deep LLM analysis of whether a -4 hit transfer is worth taking.
-    """
-    prompt = f"""A Fantasy Premier League manager is considering taking a -4 point hit 
-for the following transfer. Analyse whether it is worth it.
+    prompt = f"""FPL transfer analysis. Be extremely concise — maximum 4 bullet points total.
 
-PLAYER OUT:
-- Name: {player_out['name']}
-- Position: {player_out['position']}
-- Price: £{player_out['price']}m
-- Form: {player_out['form']}
-- EP Next GW: {player_out['ep_next']}
-- Fixtures (next 5 GWs FDR): {player_out['fdrs']}
-- Status: {player_out['status']}
-- News: {player_out.get('news', 'None')}
+OUT: {player_out['name']} | EP: {player_out['ep_next']} | Form: {player_out['form']} | Fixtures: {player_out['fdrs']} | Status: {player_out['status']}
+IN:  {player_in['name']} | EP: {player_in['ep_next']} | Form: {player_in['form']} | Fixtures: {player_in['fdrs']}
+Bank after: £{round(context['bank'] - (float(player_in['price']) - float(player_out['price'])), 1)}m
+Free transfers left: {context.get('free_transfers', 1)}
 
-PLAYER IN:
-- Name: {player_in['name']}
-- Position: {player_in['position']}
-- Price: £{player_in['price']}m
-- Form: {player_in['form']}
-- EP Next GW: {player_in['ep_next']}
-- Fixtures (next 5 GWs FDR): {player_in['fdrs']}
-
-SQUAD CONTEXT:
-- Bank after transfer: £{round(context['bank'] - (float(player_in['price']) - float(player_out['price'])), 1)}m
-- Free transfers available: {context.get('free_transfers', 1)}
-
-Please provide:
-1. Expected points gained this GW from the transfer
-2. Projected points difference over the next 3 GWs based on form and fixtures
-3. Breakeven calculation — how many GWs to recover the -4?
-4. Risk assessment — what could go wrong with this transfer?
-5. Final verdict — take the hit YES or NO, and why
-
-Be specific with numbers. Be direct. One clear recommendation at the end."""
+Provide exactly:
+- EP gain this GW: [number]
+- Breakeven: [X GWs] (or "Free transfer — no breakeven needed")
+- Biggest risk: [one sentence]
+"""
 
     payload = {
         "model": MODEL,
@@ -355,7 +369,7 @@ Be specific with numbers. Be direct. One clear recommendation at the end."""
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": prompt}
         ],
-        "max_tokens": 1500
+        "max_tokens": 600
     }
 
     headers = {

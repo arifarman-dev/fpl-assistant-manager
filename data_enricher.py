@@ -1,7 +1,36 @@
 import pandas as pd
+from odds_fetcher import get_premier_league_odds, build_team_odds_map
 
 BASE = "https://raw.githubusercontent.com/olbauday/FPL-Core-Insights/main/data/2025-2026"
 BASE_GW = BASE + "/By%20Gameweek"
+
+# Map FPL short names -> Odds API full team names
+# Odds API uses full names; FPL uses short codes
+FPL_TO_ODDS_TEAM = {
+    "ARS": "Arsenal",
+    "AVL": "Aston Villa",
+    "BOU": "Bournemouth",
+    "BRE": "Brentford",
+    "BHA": "Brighton and Hove Albion",
+    "BUR": "Burnley",
+    "CHE": "Chelsea",
+    "CRY": "Crystal Palace",
+    "EVE": "Everton",
+    "FUL": "Fulham",
+    "IPS": "Ipswich Town",
+    "LEE": "Leeds United",
+    "LEI": "Leicester City",
+    "LIV": "Liverpool",
+    "MCI": "Manchester City",
+    "MUN": "Manchester United",
+    "NEW": "Newcastle United",
+    "NFO": "Nottingham Forest",
+    "SOU": "Southampton",
+    "SUN": "Sunderland",
+    "TOT": "Tottenham Hotspur",
+    "WHU": "West Ham United",
+    "WOL": "Wolverhampton Wanderers",
+}
 
 
 def get_latest_gw_from_stats() -> int:
@@ -85,8 +114,8 @@ def get_recent_gw_performance(current_gw: int, n_gws: int = 5) -> pd.DataFrame:
 
 def enrich_context(context: dict, current_gw: int) -> dict:
     """
-    Master enrichment function. Adds xG, xA, Elo, and chance of playing
-    data to the existing transformer context.
+    Master enrichment function. Adds xG, xA, Elo, chance of playing,
+    and betting odds (win probability, over 2.5 goals) to the context.
     """
     print("  Fetching enrichment data...")
 
@@ -94,14 +123,37 @@ def enrich_context(context: dict, current_gw: int) -> dict:
     player_stats = get_enriched_player_stats(current_gw)
     elo_map = get_team_elo()
     recent_form = get_recent_gw_performance(current_gw, n_gws=5)
-    
-    print("  ✅ External data fetched (xG, Elo, Recent Form)")
 
-    # 2. Enrich the SQUAD
+    # 2. Fetch odds and build team-level signals
+    odds_map = {}  # fpl_short_name -> {win_prob, over25_prob, opponent, home}
+    try:
+        odds_data = get_premier_league_odds()
+        raw_odds_map = build_team_odds_map(odds_data)
+        # Translate odds API team names back to FPL short names
+        odds_name_to_fpl = {v: k for k, v in FPL_TO_ODDS_TEAM.items()}
+        for odds_name, signals in raw_odds_map.items():
+            fpl_short = odds_name_to_fpl.get(odds_name)
+            if fpl_short:
+                odds_map[fpl_short] = signals
+        print("  ✅ External data fetched (xG, Elo, Recent Form, Odds)")
+    except Exception as e:
+        print(f"  ⚠️  Odds fetch failed ({e}), continuing without odds")
+        print("  ✅ External data fetched (xG, Elo, Recent Form)")
+
+    def attach_odds(df: pd.DataFrame) -> pd.DataFrame:
+        """Add win_prob and over25_prob columns based on player's team."""
+        df = df.copy()
+        df["win_prob"]    = df["team"].map(
+            lambda t: odds_map.get(t, {}).get("win_prob")
+        )
+        df["over25_prob"] = df["team"].map(
+            lambda t: odds_map.get(t, {}).get("over25_prob")
+        )
+        return df
+
+    # 3. Enrich the SQUAD
     squad = context["squad"].copy()
     squad = squad.rename(columns={"name": "web_name"})
-    
-    # Merge stats
     squad = squad.merge(
         player_stats[["web_name", "expected_goals_per_90", "expected_assists_per_90",
                       "chance_of_playing_next_round", "news", "ict_index",
@@ -110,19 +162,17 @@ def enrich_context(context: dict, current_gw: int) -> dict:
     )
     squad = squad.merge(
         recent_form[["web_name", "avg_xg_per90", "avg_xa_per90",
-                      "avg_points", "gws_played"]],
+                     "avg_points", "gws_played"]],
         on="web_name", how="left"
     )
-    # Rename back to original schema
+    squad = attach_odds(squad)
     context["squad"] = squad.rename(columns={"web_name": "name"})
 
-    # 3. Enrich the CANDIDATES
+    # 4. Enrich the CANDIDATES
     enriched_candidates = {}
     for pos, df in context["candidates"].items():
         df = df.copy()
         df = df.rename(columns={"name": "web_name"})
-        
-        # Merge player stats
         df = df.merge(
             player_stats[["web_name", "expected_goals_per_90",
                           "expected_assists_per_90",
@@ -130,16 +180,16 @@ def enrich_context(context: dict, current_gw: int) -> dict:
                           "ict_index", "penalties_order", "starts_per_90"]],
             on="web_name", how="left"
         )
-        # Merge recent form
         df = df.merge(
             recent_form[["web_name", "avg_xg_per90", "avg_xa_per90", "avg_points"]],
             on="web_name", how="left"
         )
-        # Store with the original "name" column for the rest of your app
+        df = attach_odds(df)
         enriched_candidates[pos] = df.rename(columns={"web_name": "name"})
 
     context["candidates"] = enriched_candidates
     context["elo_map"] = elo_map
+    context["odds_map"] = odds_map
 
     print("  🚀 Context enrichment complete.")
     return context

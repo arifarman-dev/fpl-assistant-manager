@@ -80,6 +80,11 @@ def fetch_all(team_id: int) -> dict:
     print(f"  ✅ Chips used: {chip_status['used']}")
     print(f"  ✅ Chips available: {chip_status['available']}")
 
+    current_gw = get_current_gameweek(bootstrap)
+    print(f"DEBUG: current_gw={current_gw}")
+    picks = get_team_picks(team_id, current_gw)
+    print(f"DEBUG: picks event={picks['entry_history']['event']}")
+
     return {
         "bootstrap":      bootstrap,
         "fixtures":       fixtures,
@@ -126,51 +131,47 @@ def calculate_free_transfers(team_id: int, current_gw: int) -> int:
 
         # ft_bank = free transfers available at the START of each GW
         ft_bank = 1
-        prev_gw_num = None
 
-        for i, gw in enumerate(gw_history):
+        for gw in gw_history:
             gw_num = gw["event"]
             made   = gw["event_transfers"]
             cost   = gw["event_transfers_cost"]
             chip   = chips_used.get(gw_num, "")
 
             if gw_num == current_gw:
-                # Current GW — subtract transfers made, don't add +1
+                # Current GW — subtract transfers already made, no +1 yet
                 if cost == 0:
                     ft_bank = max(0, ft_bank - made)
                 else:
                     ft_bank = 0
                 break
 
-            # Past GW — simulate the FT bank change
+            # Past GW — simulate the FT bank change for next GW
             if chip == "freehit":
-                # Real team FT bank unaffected, carries over + 1 for next GW
+                # After a Free Hit, your real team's FT bank is fully preserved
+                # (no transfers were spent) and you earn the normal +1.
+                # FPL does NOT cap at 2 in this case — you can carry 3.
                 ft_bank = ft_bank + 1
             elif chip == "wildcard":
-                # Resets to 1 next GW
-                ft_bank = 2  # 1 reset + 1 for next GW
+                # Wildcard resets bank to 1 for next GW
+                ft_bank = 1
             elif cost > 0:
-                # Hit taken — resets to 1 next GW
-                ft_bank = 2
+                # Hit taken — bank resets to 1 for next GW
+                ft_bank = 1
             else:
-                # Normal GW
-                ft_bank = max(0, ft_bank - made) + 1
+                # Normal GW: spend FTs used, earn 1 for next GW, cap at 2
+                ft_bank = min(max(0, ft_bank - made) + 1, 2)
 
-            prev_gw_num = gw_num
-
-        # If current GW not in history yet, subtract the extra +1
-        # added in the last past GW iteration
         current_gw_in_history = any(
             g["event"] == current_gw for g in gw_history
         )
         if not current_gw_in_history:
-            ft_bank = max(1, ft_bank - 1)
+            ft_bank = min(ft_bank, 2)
 
-        print(f"DEBUG FT: current_gw={current_gw}, "
-              f"in_history={current_gw_in_history}, "
-              f"ft_bank={ft_bank}")
+        print(f"  ✅ FT calculation: GW{current_gw}, "
+              f"in_history={current_gw_in_history}, ft_bank={ft_bank}")
 
-        return max(1, ft_bank)
+        return max(0, ft_bank)
 
     except Exception:
         return 1
@@ -276,3 +277,72 @@ def get_chip_status(team_id: int) -> dict:
 
     except Exception:
         return {"used": [], "available": [], "raw_counts": {}}
+    
+def build_team_odds_map(odds_data: list) -> dict[str, dict]:
+    team_map = {}
+
+    for match in odds_data:
+        home_team = match["home_team"]
+        away_team = match["away_team"]
+
+        win_prob_home = None
+        win_prob_away = None
+        over25_prob   = None
+        draw_prob     = None
+
+        for bookmaker in match.get("bookmakers", [])[:1]:
+            for market in bookmaker.get("markets", []):
+                if market["key"] == "h2h":
+                    for outcome in market["outcomes"]:
+                        if outcome["name"] == home_team:
+                            win_prob_home = round(1 / outcome["price"] * 100, 1)
+                        elif outcome["name"] == away_team:
+                            win_prob_away = round(1 / outcome["price"] * 100, 1)
+                        elif outcome["name"] == "Draw":
+                            draw_prob = round(1 / outcome["price"] * 100, 1)
+
+                elif market["key"] == "totals":
+                    for outcome in market["outcomes"]:
+                        if outcome.get("point") == 2.5 and outcome["name"] == "Over":
+                            over25_prob = round(1 / outcome["price"] * 100, 1)
+
+        # Projected goals — split match total by win share
+        # Over 2.5 implied probability maps to ~2.6 expected goals
+        # We distribute by win probability share
+        if over25_prob and win_prob_home and win_prob_away:
+            # Implied match total from over 2.5 probability
+            # ~45% o2.5 = ~2.3 goals, ~65% = ~2.8 goals, ~80% = ~3.2 goals
+            match_total = 1.8 + (over25_prob / 100) * 2.2
+            total_attack = (win_prob_home + win_prob_away) or 1
+            proj_home = round(match_total * win_prob_home / total_attack, 2)
+            proj_away = round(match_total * win_prob_away / total_attack, 2)
+        else:
+            proj_home = None
+            proj_away = None
+
+        # Clean sheet probability
+        # CS% = rough inverse of opponent projected goals
+        # If opponent projected to score 0.8 goals, CS% ~= 40%
+        def cs_from_proj(opp_proj):
+            if opp_proj is None:
+                return None
+            return round(max(0, 55 - opp_proj * 22), 1)
+
+        team_map[home_team] = {
+            "win_prob":    win_prob_home,
+            "over25_prob": over25_prob,
+            "proj_goals":  proj_home,
+            "cs_prob":     cs_from_proj(proj_away),
+            "opponent":    away_team,
+            "home":        True,
+        }
+        team_map[away_team] = {
+            "win_prob":    win_prob_away,
+            "over25_prob": over25_prob,
+            "proj_goals":  proj_away,
+            "cs_prob":     cs_from_proj(proj_home),
+            "opponent":    home_team,
+            "home":        False,
+        }
+
+    return team_map

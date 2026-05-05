@@ -111,10 +111,6 @@ if run_button or (
 
                 status.update(label="✅ Analysis complete!", state="complete")
 
-                # Debug — remove after testing
-            st.write("DEBUG chips available:", data["chip_status"]["available"])
-            st.write("DEBUG chips used:", data["chip_status"]["used"])
-
             # Cache everything
             st.session_state["data"] = data
             st.session_state["context"] = context
@@ -159,6 +155,19 @@ if run_button or (
     col3.metric("Bank", f"£{context['bank']}m")
     col4.metric("Free Transfers", data["free_transfers"])
 
+    # Allow manual override if FT count looks wrong
+    with st.expander("⚙️ Override free transfers (if count looks wrong)"):
+        ft_override = st.number_input(
+            "Free transfers available this GW",
+            min_value=0, max_value=5,
+            value=int(data["free_transfers"]),
+            step=1,
+            help="Override the calculated value if it doesn't match what FPL shows you"
+        )
+        if ft_override != data["free_transfers"]:
+            data["free_transfers"] = ft_override
+            st.info(f"Using {ft_override} free transfer(s) for recommendations.")
+
     # --- Injury alerts ---
     squad = context["squad"]
     injured = squad[squad["status"] == "i"]
@@ -189,12 +198,14 @@ if run_button or (
             if row.get("is_captain"): return "border:1.5px solid #185FA5"
             return "border:0.5px solid rgba(255,255,255,0.3)"
 
-        def player_card_html(row, opacity=1.0):
+        def player_card_html(row, is_bench=False):
+            bg = "rgba(0,0,0,0.25)" if is_bench else "var(--color-background-primary)"
+            text_opacity = "0.88" if is_bench else "1.0"
             return (
-                f'<div style="background:var(--color-background-primary);'
+                f'<div style="background:{bg};'
                 f'{card_border(row)};border-radius:8px;padding:6px 8px;'
                 f'text-align:center;min-width:80px;max-width:95px;'
-                f'flex:1;opacity:{opacity}">'
+                f'flex:1;opacity:{text_opacity}">'
                 f'<p style="font-size:11px;font-weight:500;margin:0;'
                 f'white-space:nowrap;overflow:hidden;text-overflow:ellipsis;'
                 f'color:var(--color-text-primary)">{row["name"]}</p>'
@@ -248,16 +259,22 @@ if run_button or (
 
         # Bench
         st.markdown(
-            '<hr style="border:0;border-top:1.5px dashed rgba(255,255,255,0.2);'
+            '<hr style="border:0;border-top:1.5px dashed rgba(255,255,255,0.25);'
             'margin:10px 0 6px">'
-            '<p style="font-size:10px;color:rgba(255,255,255,0.4);'
-            'text-align:center;margin:0 0 4px">BENCH</p>',
+            '<p style="font-size:11px;font-weight:600;color:rgba(255,255,255,0.6);'
+            'text-align:center;margin:0 0 6px;letter-spacing:0.08em">— BENCH —</p>',
             unsafe_allow_html=True
         )
 
+        bench_sorted = bench.sort_values("pick_position")
+        # Always show GK first in bench display
+        bench_gk = bench_sorted[bench_sorted["position"] == "GK"]
+        bench_outfield = bench_sorted[bench_sorted["position"] != "GK"]
+        bench_display = pd.concat([bench_gk, bench_outfield])
+
         bench_cards = "".join(
-            player_card_html(row, opacity=0.65)
-            for _, row in bench.iterrows()
+            player_card_html(row, is_bench=True)
+            for _, row in bench_display.iterrows()
         )
         st.markdown(
             f'<div style="display:flex;justify-content:center;'
@@ -363,4 +380,29 @@ if run_button or (
 
     # --- AI Recommendation ---
     st.subheader("🤖 AI Transfer Recommendation")
-    st.markdown(recommendation)
+
+    # Split on the --- separator the LLM is instructed to use
+    section_icons = ["🚨", "🔄", "✈️", "🃏", "©️"]
+    chunks = [c.strip() for c in recommendation.split("---") if c.strip()]
+
+    if len(chunks) >= 2:
+        for i, chunk in enumerate(chunks):
+            icon = section_icons[i] if i < len(section_icons) else "•"
+            # Split header (first line) from body
+            lines = chunk.split("\n", 1)
+            header_line = lines[0].strip().strip("*").strip()
+            body = lines[1].strip() if len(lines) > 1 else ""
+            with st.container():
+                st.markdown(
+                    f'<div style="border-left:3px solid rgba(255,255,255,0.25);'
+                    f'padding:4px 12px 2px;margin:14px 0 4px;border-radius:0 4px 4px 0">'
+                    f'<p style="margin:0;font-size:14px;font-weight:600;'
+                    f'color:var(--color-text-primary)">{icon} {header_line}</p>'
+                    f'</div>',
+                    unsafe_allow_html=True
+                )
+                if body:
+                    st.markdown(body)
+    else:
+        # Fallback if LLM didn't use separators
+        st.markdown(recommendation)
