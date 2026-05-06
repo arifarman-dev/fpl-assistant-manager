@@ -1,3 +1,4 @@
+#transformer.py
 import pandas as pd
 from config import FPL_HEADERS
 
@@ -201,25 +202,28 @@ def get_transfer_candidates(
         top4_elo_teams = {name for name, elo in elo_map.items() if elo >= 1900}
 
         def elo_adjusted_score(row):
-            base = row["form"] * 0.38 + row["ep_next"] * 0.32 + (6 - row["avg_fdr"]) * 0.20 + minutes_factor[row.name] * 0.10
-            # Penalise if first fixture is against a top-4 Elo team
+            base = (
+                row["form"] * 0.35 +
+                row["ep_next"] * 0.45 +
+                (6 - row["avg_fdr"]) * 0.12 +
+                minutes_factor[row.name] * 0.08
+            )
             fdrs_str = row["fdrs"]
             if fdrs_str and fdrs_str != "n/a":
-                first_fix = fdrs_str.split("/")[0].strip()  # e.g. "GW36 vs ARS(4)"
                 for top_team in top4_elo_teams:
-                    if top_team in first_fix:
-                        base -= 0.15  # meaningful penalty for facing elite opposition immediately
+                    if top_team in fdrs_str:  # check all fixtures
+                        base -= 0.15
                         break
             return base
 
         available["score"] = available.apply(elo_adjusted_score, axis=1)
     else:
         available["score"] = (
-            available["form"] * 0.38 +
-            available["ep_next"] * 0.32 +
-            (6 - available["avg_fdr"].fillna(3)) * 0.20 +
-            minutes_factor * 0.10
-        )
+        available["form"] * 0.35 +
+        available["ep_next"] * 0.45 +
+        (6 - available["avg_fdr"].fillna(3)) * 0.12 +
+        minutes_factor * 0.08
+    )
 
     candidates = {}
     for position in ["GK", "DEF", "MID", "FWD"]:

@@ -1,3 +1,4 @@
+#app.py
 import requests
 import streamlit as st
 import pandas as pd
@@ -29,13 +30,15 @@ Your AI-powered FPL edge. Built for managers who want data-driven decisions,
 not gut feelings.
 """)
 
-col1, col2, col3 = st.columns(3)
+col1, col2, col3, col4 = st.columns(4)
 with col1:
     st.info("🔄 **Transfer Hub**\nAI recommendations personalised to your squad")
 with col2:
-    st.info("🔍 **Differentials**\nHigh-form, low-ownership gems others are missing")
+    st.info("🎯 **Transfer Planner**\nPlan transfers with live budget and hit calculator")
 with col3:
-    st.info("📅 **Fixture Planner**\nDGW/BGW calendar with chip strategy")
+    st.info("🔍 **Differentials**\nHigh-form, low-ownership gems others are missing")
+with col4:
+    st.info("📊 **GW Projections**\nBookmaker odds — projected goals and clean sheet %")
 
 st.markdown("---")
 st.caption("Enter your FPL team ID in any section to get started.")
@@ -52,7 +55,7 @@ run_button = st.button("Get Transfer Recommendation", type="primary")
 
 if run_button or (
     st.session_state.get("last_team_id") and
-    "context" not in st.session_state
+    st.session_state.get("context") is None
 ):
 
     if not team_id_input.strip():
@@ -147,7 +150,7 @@ if run_button or (
 
     # --- Team summary metrics ---
     st.subheader(f"📋 {context['team_name']}")
-    col1, col2, col3, col4 = st.columns(4)
+    col1, col2, col3, col4= st.columns(4)
     col1.metric("Manager", f"{data['team_info']['player_first_name']} "
                            f"{data['team_info']['player_last_name']}")
     col2.metric("Overall Rank",
@@ -380,6 +383,10 @@ if run_button or (
 
     # --- AI Recommendation ---
     st.subheader("🤖 AI Transfer Recommendation")
+
+    if "recommendation" in st.session_state and st.session_state["recommendation"]:
+        # Show cached recommendation immediately
+        recommendation = st.session_state["recommendation"]
 
     # Split on the --- separator the LLM is instructed to use
     section_icons = ["🚨", "🔄", "✈️", "🃏", "©️"]

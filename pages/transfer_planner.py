@@ -12,7 +12,7 @@ st.set_page_config(page_title="Transfer Planner", page_icon="🎯")
 st.title("🎯 Transfer Planner")
 st.caption(
     "Plan your transfers step by step. "
-    "Sell a player, pick a replacement, repeat. "
+    "Sell a player, pick a replacement — including over-budget targets. "
     "Budget and hit cost update in real time."
 )
 
@@ -42,10 +42,6 @@ transfers = st.session_state["tp_transfers"]
 
 # ── derived state ─────────────────────────────────────────────────────────────
 def current_squad() -> pd.DataFrame:
-    """
-    Return the squad as it would look after all planned transfers.
-    Sold players are replaced by bought players in the same position slot.
-    """
     squad = original_squad.copy()
     for t in transfers:
         out_name = t["out"]["name"]
@@ -62,10 +58,6 @@ def current_squad() -> pd.DataFrame:
 
 
 def pooled_bank() -> float:
-    """
-    Total available budget = original bank + sum of all sell prices
-    minus sum of all buy prices.
-    """
     b = bank
     for t in transfers:
         b += float(t["out"]["price"]) - float(t["in"]["price"])
@@ -77,10 +69,6 @@ def hit_count() -> int:
 
 
 def team_counts(squad: pd.DataFrame) -> dict[str, int]:
-    """
-    Count players per team in the given squad.
-    Uses bootstrap to map player name -> team.
-    """
     name_to_team = {
         p["web_name"]: next(
             (t["short_name"] for t in bootstrap["teams"]
@@ -102,12 +90,12 @@ def maxed_teams(squad: pd.DataFrame) -> set[str]:
 def available_replacements(
     position: str,
     selling_player: pd.Series,
+    show_over_budget: bool = True
 ) -> pd.DataFrame:
     """
-    Find available same-position replacements given:
-    - Pooled budget (all planned sales contribute)
-    - 3-player team rule based on POST-transfer squad
-    - Exclude players already in the squad or already being bought
+    Find available same-position replacements.
+    Always shows over-budget options — budget column tells user
+    how much extra they need to free up.
     """
     squad_after = current_squad()
     squad_for_limit_check = squad_after[
@@ -115,15 +103,10 @@ def available_replacements(
     ]
     maxed = maxed_teams(squad_for_limit_check)
 
-    # Players already in the updated squad
     squad_names = set(squad_after["name"].tolist())
-    # Also exclude the player being sold from the "in squad" check
     squad_names.discard(selling_player["name"])
-
     for t in transfers:
         squad_names.discard(t["out"]["name"])
-
-    budget = pooled_bank() + float(selling_player["price"])
 
     budget = pooled_bank() + float(selling_player["price"])
 
@@ -136,19 +119,48 @@ def available_replacements(
         (player_df["name"] != selling_player["name"])
     ].copy()
 
-    # Split affordable vs over budget
+    elo_map = context.get("elo_map", {})
+    top4_elo = {n for n, e in elo_map.items() if e >= 1900} if elo_map else set()
+
+    def score_row(row):
+        base = (
+            row["form"] * 0.35 +
+            row["ep_next"] * 0.45 +
+            (6 - (row["avg_fdr"] if pd.notna(row["avg_fdr"]) else 3)) * 0.12 +
+            (min(row["minutes"], 2700) / 2700) * 0.08
+        )
+        fdrs_str = str(row.get("fdrs", ""))
+        if fdrs_str and fdrs_str != "n/a" and top4_elo:
+            for elite in top4_elo:
+                if elite in fdrs_str:
+                    base -= 0.15
+                    break
+        return base
+
+    pool["score"]      = pool.apply(score_row, axis=1)
     pool["affordable"] = pool["price"] <= budget
+    pool["shortfall"]  = (pool["price"] - budget).clip(lower=0).round(1)
+
     return pool.sort_values(
-        ["affordable", "ep_next"], ascending=[False, False]
+        ["affordable", "score"], ascending=[False, False]
     ).reset_index(drop=True)
 
 
 # ── summary bar ───────────────────────────────────────────────────────────────
 st.markdown("---")
+budget_val = pooled_bank()
+budget_colour = (
+    "normal" if budget_val >= 0 else "inverse"
+)
 c1, c2, c3, c4 = st.columns(4)
-c1.metric("Pooled budget",   f"£{pooled_bank()}m")
-c2.metric("Free transfers",  free_transfers)
-c3.metric("Planned",         len(transfers))
+c1.metric(
+    "Pooled budget",
+    f"£{budget_val}m",
+    delta="Over budget" if budget_val < 0 else None,
+    delta_color="inverse" if budget_val < 0 else "normal"
+)
+c2.metric("Free transfers", free_transfers)
+c3.metric("Planned",        len(transfers))
 hits = hit_count()
 c4.metric(
     "Hit cost",
@@ -157,30 +169,72 @@ c4.metric(
     delta_color="inverse" if hits > 0 else "normal"
 )
 
+if budget_val < 0:
+    st.warning(
+        f"⚠️ You are **£{abs(budget_val)}m over budget**. "
+        f"Sell another player to free up funds before this plan is executable."
+    )
+
 # ── planned transfers ─────────────────────────────────────────────────────────
 if transfers:
     st.markdown("---")
     st.markdown("#### Planned transfers")
+
+    current_ep       = original_squad["ep_next"].sum()
+    post_ep          = current_squad()["ep_next"].sum()
+    hit_cost_preview = hit_count() * 4
+    ep_gain_preview  = round(post_ep - current_ep, 1)
+    net_ep_preview   = round(post_ep - hit_cost_preview, 1)
+
+    m1, m2, m3, m4, m5 = st.columns(5)
+    m1.metric("Current squad EP",  f"{current_ep:.1f}")
+    m2.metric("New squad EP",      f"{post_ep:.1f}",
+              delta=f"{ep_gain_preview:+.1f}")
+    m3.metric("Hit cost",
+              f"-{hit_cost_preview} pts" if hit_cost_preview > 0 else "Free")
+    m4.metric("Net EP after hit",  f"{net_ep_preview:.1f}",
+              delta=f"{round(net_ep_preview - current_ep, 1):+.1f}",
+              delta_color="normal")
+    m5.metric("Bank after",        f"£{pooled_bank()}m")
+    st.caption(
+        "EP = Expected Points across all 15 squad players. "
+        "Net EP factors in hit cost. Plan is only executable when bank ≥ £0m."
+    )
+
     for idx, t in enumerate(transfers):
         o, i    = t["out"], t["in"]
         ep_diff = round(float(i["ep_next"]) - float(o["ep_next"]), 1)
         pr_diff = round(float(i["price"])   - float(o["price"]),   1)
-        ca, cb, cc, cd = st.columns([3, 3, 2, 1])
+        is_free = idx < free_transfers
+
+        ca, cb, cc, cd, ce = st.columns([3, 3, 2, 1, 1])
         ca.markdown(f"🔴 **{o['name']}** £{o['price']}m · EP {o['ep_next']}")
         cb.markdown(f"🟢 **{i['name']}** £{i['price']}m · EP {i['ep_next']}")
         ep_sign = "▲" if ep_diff >= 0 else "▼"
         cc.markdown(
             f"EP {ep_sign}{abs(ep_diff):.1f} · "
-            f"£{'+' if pr_diff >= 0 else ''}{pr_diff}m"
+            f"£{'+' if pr_diff >= 0 else ''}{pr_diff}m · "
+            f"{'Free' if is_free else '-4pts'}"
         )
-        if cd.button("✕", key=f"rm_{idx}"):
+        # Undo individual transfer
+        if cd.button("↩", key=f"undo_{idx}",
+                     help=f"Undo: {o['name']} → {i['name']}"):
             st.session_state["tp_transfers"].pop(idx)
             st.session_state["tp_selling"] = None
+            st.session_state["tp_ai"] = None
+            st.rerun()
+        # Re-sell — go back to picking a replacement for this slot
+        if ce.button("✏️", key=f"redo_{idx}",
+                     help=f"Change replacement for {o['name']}"):
+            st.session_state["tp_selling"] = o["name"]
+            st.session_state["tp_transfers"].pop(idx)
+            st.session_state["tp_ai"] = None
             st.rerun()
 
-    if st.button("Clear all", type="secondary"):
-        st.session_state["tp_transfers"]  = []
-        st.session_state["tp_selling"]    = None
+    if st.button("🗑️ Clear all transfers", type="secondary"):
+        st.session_state["tp_transfers"] = []
+        st.session_state["tp_selling"]   = None
+        st.session_state["tp_ai"]        = None
         st.rerun()
 
 # ── squad view ────────────────────────────────────────────────────────────────
@@ -210,9 +264,9 @@ for pos in POSITIONS:
     cols = st.columns(len(pos_players))
 
     for col, (_, p) in zip(cols, pos_players.iterrows()):
-        is_selling    = p["name"] == selling_name
-        was_bought    = any(t["in"]["name"] == p["name"] for t in transfers)
-        was_sold      = any(t["out"]["name"] == p["name"] for t in transfers)
+        is_selling = p["name"] == selling_name
+        was_bought = any(t["in"]["name"] == p["name"] for t in transfers)
+        was_sold   = any(t["out"]["name"] == p["name"] for t in transfers)
 
         ep_col = (
             "#1D9E75" if p["ep_next"] >= 6
@@ -231,9 +285,6 @@ for pos in POSITIONS:
         elif was_bought:
             bg     = "rgba(29,158,117,0.15)"
             border = "1.5px solid #1D9E75"
-        elif was_sold:
-            bg     = "rgba(255,255,255,0.04)"
-            border = "0.5px solid rgba(255,255,255,0.1)"
         else:
             bg     = "rgba(255,255,255,0.03)"
             border = "0.5px solid rgba(255,255,255,0.1)"
@@ -243,6 +294,8 @@ for pos in POSITIONS:
             tag = "<p style='margin:1px 0;font-size:9px;color:#E24B4A'>SELECTING...</p>"
         elif was_bought:
             tag = "<p style='margin:1px 0;font-size:9px;color:#1D9E75'>NEW</p>"
+        elif was_sold:
+            tag = "<p style='margin:1px 0;font-size:9px;color:rgba(255,255,255,0.3)'>SOLD</p>"
 
         with col:
             st.markdown(
@@ -260,7 +313,6 @@ for pos in POSITIONS:
                 unsafe_allow_html=True
             )
 
-            # Only show sell button if not already sold/being sold
             if not was_sold and not is_selling:
                 if st.button("Sell", key=f"sell_{p['name']}",
                              use_container_width=True):
@@ -271,22 +323,42 @@ for pos in POSITIONS:
                              use_container_width=True):
                     st.session_state["tp_selling"] = None
                     st.rerun()
+            elif was_sold:
+                # Find the original player this slot maps to
+                original_out = next(
+                    (t["out"]["name"] for t in transfers
+                     if t["in"]["name"] == p["name"]),
+                    p["name"]
+                )
+                if st.button("↩ Undo", key=f"undo_card_{p['name']}",
+                             use_container_width=True):
+                    idx = next(
+                        (i for i, t in enumerate(transfers)
+                         if t["in"]["name"] == p["name"]),
+                        None
+                    )
+                    if idx is not None:
+                        st.session_state["tp_transfers"].pop(idx)
+                        st.session_state["tp_selling"] = None
+                        st.session_state["tp_ai"] = None
+                        st.rerun()
 
 # ── replacement picker ────────────────────────────────────────────────────────
 if selling_name:
-    # Find the player being sold from original squad
     selling_rows = original_squad[original_squad["name"] == selling_name]
-    if selling_rows.empty:
-        # Might have been a previously bought player
+    chain_original_name = None
+
+    if not selling_rows.empty:
+        selling_player = selling_rows.iloc[0]
+    else:
         for t in transfers:
             if t["in"]["name"] == selling_name:
+                chain_original_name = t["out"]["name"]
                 selling_player = t["in"]
                 break
-    else:
-        selling_player = selling_rows.iloc[0]
 
-    out_pos    = selling_player["position"]
-    budget     = round(pooled_bank() + float(selling_player["price"]), 1)
+    out_pos = selling_player["position"]
+    budget  = round(pooled_bank() + float(selling_player["price"]), 1)
 
     st.markdown("---")
     st.markdown(
@@ -294,28 +366,23 @@ if selling_name:
         f"({out_pos} · £{selling_player['price']}m · EP {selling_player['ep_next']})"
     )
     st.caption(
-        f"Budget: £{budget}m (bank + all sales so far) · "
-        f"Position: {out_pos} only · "
-        f"Teams at 3-player limit are excluded automatically"
+        f"Current budget: £{budget}m · Position: {out_pos} only · "
+        f"Over-budget options shown — sell more players to unlock them"
     )
 
     pool = available_replacements(out_pos, selling_player)
 
     if pool.empty:
-        st.warning(
-            f"No available {out_pos} players found. "
-            f"You may be at the 3-player limit for all teams with good options."
-        )
+        st.warning(f"No available {out_pos} players found.")
     else:
         affordable   = pool[pool["affordable"]].head(12)
-        over_budget  = pool[~pool["affordable"]].head(6)
+        over_budget  = pool[~pool["affordable"]].head(8)
 
+        # ── Affordable options ──
         if not affordable.empty:
             st.markdown("**Within budget:**")
             n = min(4, len(affordable))
-            rows_needed = -(-len(affordable) // n)
-
-            for row_i in range(rows_needed):
+            for row_i in range(-(-len(affordable) // n)):
                 row_players = affordable.iloc[row_i * n: row_i * n + n]
                 cols = st.columns(n)
                 for col, (_, p) in zip(cols, row_players.iterrows()):
@@ -328,8 +395,7 @@ if selling_name:
                         st.markdown(
                             f'<div style="background:rgba(29,158,117,0.08);'
                             f'border:0.5px solid rgba(29,158,117,0.3);'
-                            f'border-radius:8px;padding:8px 4px;'
-                            f'text-align:center">'
+                            f'border-radius:8px;padding:8px 4px;text-align:center">'
                             f'<p style="margin:0;font-size:11px;font-weight:600;'
                             f'white-space:nowrap;overflow:hidden;'
                             f'text-overflow:ellipsis">{p["name"]}</p>'
@@ -340,127 +406,183 @@ if selling_name:
                             f'color:{ep_col}">EP {p["ep_next"]}</p>'
                             f'<p style="margin:1px 0;font-size:9px;'
                             f'color:rgba(255,255,255,0.3)">'
-                            f'{str(p["fdrs"])[:28]}</p>'
+                            f'{str(p["fdrs"])[:30]}</p>'
                             f'</div>',
                             unsafe_allow_html=True
                         )
-                        if st.button(
-                            "Buy", key=f"buy_{p['name']}",
-                            use_container_width=True
-                        ):
-                            st.session_state["tp_transfers"].append({
-                                "out": selling_player,
-                                "in":  p,
-                            })
+                        if st.button("Buy", key=f"buy_{p['name']}",
+                                     use_container_width=True):
+                            slot_original = (
+                                chain_original_name
+                                if chain_original_name
+                                else selling_name
+                            )
+                            existing_idx = next(
+                                (i for i, t in enumerate(
+                                    st.session_state["tp_transfers"])
+                                 if t["out"]["name"] == slot_original),
+                                None
+                            )
+                            if existing_idx is not None:
+                                st.session_state["tp_transfers"][existing_idx] = {
+                                    "out": st.session_state[
+                                        "tp_transfers"][existing_idx]["out"],
+                                    "in":  p,
+                                }
+                            else:
+                                st.session_state["tp_transfers"].append({
+                                    "out": selling_player,
+                                    "in":  p,
+                                })
                             st.session_state["tp_selling"] = None
                             st.rerun()
 
+        # ── Over-budget options ──
         if not over_budget.empty:
-            with st.expander(
-                f"💸 {len(over_budget)} over-budget options "
-                f"(sell another player to unlock funds)"
-            ):
-                for _, p in over_budget.iterrows():
-                    shortfall = round(float(p["price"]) - budget, 1)
-                    st.markdown(
-                        f"**{p['name']}** ({p['team']}) · "
-                        f"£{p['price']}m · EP {p['ep_next']} · "
-                        f"*£{shortfall}m short — sell another player first*"
+            st.markdown("---")
+            st.markdown(
+                "**💸 Premium targets** *(over budget — sell more players "
+                "to unlock these)*"
+            )
+            n = min(4, len(over_budget))
+            for row_i in range(-(-len(over_budget) // n)):
+                row_players = over_budget.iloc[row_i * n: row_i * n + n]
+                cols = st.columns(n)
+                for col, (_, p) in zip(cols, row_players.iterrows()):
+                    ep_col = (
+                        "#1D9E75" if p["ep_next"] >= 6
+                        else "#BA7517" if p["ep_next"] >= 4
+                        else "#E24B4A"
                     )
+                    shortfall = p["shortfall"]
+                    with col:
+                        st.markdown(
+                            f'<div style="background:rgba(186,117,23,0.08);'
+                            f'border:0.5px solid rgba(186,117,23,0.35);'
+                            f'border-radius:8px;padding:8px 4px;text-align:center">'
+                            f'<p style="margin:0;font-size:11px;font-weight:600;'
+                            f'white-space:nowrap;overflow:hidden;'
+                            f'text-overflow:ellipsis">{p["name"]}</p>'
+                            f'<p style="margin:1px 0;font-size:10px;'
+                            f'color:rgba(255,255,255,0.45)">'
+                            f'£{p["price"]}m · {p["team"]}</p>'
+                            f'<p style="margin:0;font-size:11px;font-weight:600;'
+                            f'color:{ep_col}">EP {p["ep_next"]}</p>'
+                            f'<p style="margin:1px 0;font-size:9px;'
+                            f'color:#BA7517;font-weight:500">'
+                            f'£{shortfall}m needed</p>'
+                            f'<p style="margin:1px 0;font-size:9px;'
+                            f'color:rgba(255,255,255,0.3)">'
+                            f'{str(p["fdrs"])[:30]}</p>'
+                            f'</div>',
+                            unsafe_allow_html=True
+                        )
+                        # Allow buying even if over budget
+                        # Budget goes negative — warning shown at top
+                        if st.button(
+                            f"Buy (£{shortfall}m short)",
+                            key=f"buy_ob_{p['name']}",
+                            use_container_width=True
+                        ):
+                            slot_original = (
+                                chain_original_name
+                                if chain_original_name
+                                else selling_name
+                            )
+                            existing_idx = next(
+                                (i for i, t in enumerate(
+                                    st.session_state["tp_transfers"])
+                                 if t["out"]["name"] == slot_original),
+                                None
+                            )
+                            if existing_idx is not None:
+                                st.session_state["tp_transfers"][existing_idx] = {
+                                    "out": st.session_state[
+                                        "tp_transfers"][existing_idx]["out"],
+                                    "in":  p,
+                                }
+                            else:
+                                st.session_state["tp_transfers"].append({
+                                    "out": selling_player,
+                                    "in":  p,
+                                })
+                            st.session_state["tp_selling"] = None
+                            st.rerun()
 
 # ── final verdict ─────────────────────────────────────────────────────────────
 if transfers:
     st.markdown("---")
     st.subheader("📊 Plan summary")
 
-    # Current squad total EP (before transfers)
     current_ep = original_squad["ep_next"].sum()
-    
-    # Post-transfer squad total EP
-    post_squad  = current_squad()
-    post_ep     = post_squad["ep_next"].sum()
-    
-    # Hit cost
-    hit_cost    = hit_count() * 4
-    
-    # Net expected points with hit factored in
-    net_post_ep = round(post_ep - hit_cost, 1)
-    ep_gain     = round(post_ep - current_ep, 1)
-    
-    m1, m2, m3, m4, m5 = st.columns(5)
-    m1.metric(
-        "Current squad EP",
-        f"{current_ep:.1f}"
-    )
-    m2.metric(
-        "Post-transfer EP",
-        f"{post_ep:.1f}",
-        delta=f"{ep_gain:+.1f}"
-    )
-    m3.metric(
-        "Hit cost",
-        f"-{hit_cost} pts" if hit_cost > 0 else "Free"
-    )
-    m4.metric(
-        "Net EP after hit",
-        f"{net_post_ep:.1f}",
-        delta=f"{round(net_post_ep - current_ep, 1):+.1f}",
-        delta_color="normal"
-    )
-    m5.metric(
-        "Bank after",
-        f"£{pooled_bank()}m"
-    )
+    post_ep    = current_squad()["ep_next"].sum()
+    hit_cost   = hit_count() * 4
+    net_ep     = round(post_ep - hit_cost, 1)
+    ep_gain    = round(post_ep - current_ep, 1)
+    final_bank = pooled_bank()
 
-    if hit_cost == 0:
+    executable = final_bank >= 0
+
+    if not executable:
+        st.error(
+            f"❌ Plan not executable — £{abs(final_bank)}m over budget. "
+            f"Sell another player to balance the books."
+        )
+    elif hit_cost == 0:
         st.success(
             f"✅ Within free transfers. "
-            f"Squad EP increases from {current_ep:.1f} to {post_ep:.1f} "
+            f"Squad EP {current_ep:.1f} → {post_ep:.1f} "
             f"(+{ep_gain:.1f} pts)."
         )
-    elif net_post_ep > current_ep:
+    elif net_ep > current_ep:
         st.success(
-            f"✅ Worth the hit. Squad EP goes from {current_ep:.1f} to "
-            f"{post_ep:.1f} (+{ep_gain:.1f}), net {net_post_ep:.1f} "
-            f"after -{hit_cost} pt cost."
+            f"✅ Worth the hit. Squad EP {current_ep:.1f} → {post_ep:.1f} "
+            f"(+{ep_gain:.1f}), net {net_ep:.1f} after -{hit_cost} pt cost."
         )
-    elif net_post_ep == current_ep:
+    elif net_ep == current_ep:
         st.warning(
-            f"⚠️ Break even this GW. Squad EP {current_ep:.1f} → "
-            f"{net_post_ep:.1f} net. Only do this if forced by injury."
+            f"⚠️ Break even. Only do this if forced by injury."
         )
     else:
-        loss = round(current_ep - net_post_ep, 1)
         st.error(
-            f"❌ Not worth it. You lose {loss:.1f} expected pts net "
-            f"({current_ep:.1f} → {net_post_ep:.1f}). Roll the transfer."
+            f"❌ Not worth it. You lose "
+            f"{round(current_ep - net_ep, 1):.1f} pts net. Roll."
         )
 
     if hit_cost > 0 and ep_gain > 0:
         breakeven = round(hit_cost / (ep_gain / len(transfers)), 1)
         st.caption(
             f"Breakeven: ~{breakeven} GWs to recover "
-            f"the -{hit_cost} pt cost at current EP rates."
+            f"the -{hit_cost} pt cost."
         )
 
     st.markdown("---")
-    if st.button(
+    if executable and st.button(
         "🤖 Get AI verdict on this plan",
         type="primary",
         use_container_width=True
     ):
         with st.spinner("Analysing..."):
             analyses = []
-            for t in transfers:
+            for idx, t in enumerate(transfers):
+                is_free = idx < free_transfers
                 a = get_hit_analysis(
                     player_out=t["out"],
                     player_in=t["in"],
-                    context=context
+                    context=context,
+                    is_free_transfer=is_free
                 )
-                analyses.append(
-                    f"**{t['out']['name']} → {t['in']['name']}**\n\n{a}"
-                )
+                if a:
+                    analyses.append(
+                        f"**{t['out']['name']} → {t['in']['name']}** "
+                        f"{'(free)' if is_free else '(-4 pts hit)'}\n\n{a}"
+                    )
             st.session_state["tp_ai"] = "\n\n---\n\n".join(analyses)
 
-    if "tp_ai" in st.session_state:
+    elif not executable:
+        st.info(
+            "AI verdict available once your plan is within budget."
+        )
+
+    if st.session_state.get("tp_ai"):
         st.markdown(st.session_state["tp_ai"])

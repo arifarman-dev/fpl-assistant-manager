@@ -80,11 +80,6 @@ def fetch_all(team_id: int) -> dict:
     print(f"  ✅ Chips used: {chip_status['used']}")
     print(f"  ✅ Chips available: {chip_status['available']}")
 
-    current_gw = get_current_gameweek(bootstrap)
-    print(f"DEBUG: current_gw={current_gw}")
-    picks = get_team_picks(team_id, current_gw)
-    print(f"DEBUG: picks event={picks['entry_history']['event']}")
-
     return {
         "bootstrap":      bootstrap,
         "fixtures":       fixtures,
@@ -176,32 +171,6 @@ def calculate_free_transfers(team_id: int, current_gw: int) -> int:
     except Exception:
         return 1
 
-def get_free_transfers(picks: dict) -> int:
-    """
-    Extract number of free transfers available this gameweek.
-    FPL gives 1 per week, max 2 if unused last week.
-    """
-    # event_transfers is how many have been made
-    # We infer available FTs from the picks entry_history
-    transfers_made = picks["entry_history"].get("event_transfers", 0)
-    transfers_cost = picks["entry_history"].get("event_transfers_cost", 0)
-
-    # If cost is 0, all transfers so far were free
-    # FPL max bank of free transfers is 2
-    # We read the stored value directly
-    return picks.get("transfers", {}).get("limit", 1)
-
-def get_transfer_info(team_id: int) -> dict:
-    """Fetch transfer history to calculate free transfers available."""
-    response = requests.get(
-        f"{FPL_BASE_URL}/entry/{team_id}/transfers/",
-        headers=FPL_HEADERS,
-        timeout=10
-    )
-    response.raise_for_status()
-    transfers = response.json()
-    return transfers
-
 def get_chip_status(team_id: int) -> dict:
     """
     Fetch which chips have been used and which are still available.
@@ -278,71 +247,3 @@ def get_chip_status(team_id: int) -> dict:
     except Exception:
         return {"used": [], "available": [], "raw_counts": {}}
     
-def build_team_odds_map(odds_data: list) -> dict[str, dict]:
-    team_map = {}
-
-    for match in odds_data:
-        home_team = match["home_team"]
-        away_team = match["away_team"]
-
-        win_prob_home = None
-        win_prob_away = None
-        over25_prob   = None
-        draw_prob     = None
-
-        for bookmaker in match.get("bookmakers", [])[:1]:
-            for market in bookmaker.get("markets", []):
-                if market["key"] == "h2h":
-                    for outcome in market["outcomes"]:
-                        if outcome["name"] == home_team:
-                            win_prob_home = round(1 / outcome["price"] * 100, 1)
-                        elif outcome["name"] == away_team:
-                            win_prob_away = round(1 / outcome["price"] * 100, 1)
-                        elif outcome["name"] == "Draw":
-                            draw_prob = round(1 / outcome["price"] * 100, 1)
-
-                elif market["key"] == "totals":
-                    for outcome in market["outcomes"]:
-                        if outcome.get("point") == 2.5 and outcome["name"] == "Over":
-                            over25_prob = round(1 / outcome["price"] * 100, 1)
-
-        # Projected goals — split match total by win share
-        # Over 2.5 implied probability maps to ~2.6 expected goals
-        # We distribute by win probability share
-        if over25_prob and win_prob_home and win_prob_away:
-            # Implied match total from over 2.5 probability
-            # ~45% o2.5 = ~2.3 goals, ~65% = ~2.8 goals, ~80% = ~3.2 goals
-            match_total = 1.8 + (over25_prob / 100) * 2.2
-            total_attack = (win_prob_home + win_prob_away) or 1
-            proj_home = round(match_total * win_prob_home / total_attack, 2)
-            proj_away = round(match_total * win_prob_away / total_attack, 2)
-        else:
-            proj_home = None
-            proj_away = None
-
-        # Clean sheet probability
-        # CS% = rough inverse of opponent projected goals
-        # If opponent projected to score 0.8 goals, CS% ~= 40%
-        def cs_from_proj(opp_proj):
-            if opp_proj is None:
-                return None
-            return round(max(0, 55 - opp_proj * 22), 1)
-
-        team_map[home_team] = {
-            "win_prob":    win_prob_home,
-            "over25_prob": over25_prob,
-            "proj_goals":  proj_home,
-            "cs_prob":     cs_from_proj(proj_away),
-            "opponent":    away_team,
-            "home":        True,
-        }
-        team_map[away_team] = {
-            "win_prob":    win_prob_away,
-            "over25_prob": over25_prob,
-            "proj_goals":  proj_away,
-            "cs_prob":     cs_from_proj(proj_home),
-            "opponent":    home_team,
-            "home":        False,
-        }
-
-    return team_map

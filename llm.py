@@ -1,3 +1,4 @@
+#llm.py
 import requests
 import pandas as pd
 from config import OPENROUTER_API_KEY, MODEL
@@ -237,24 +238,22 @@ IMPORTANT RULES:
 
 {season_text}
 
-Please provide ONLY these sections. Use exactly this format — each section header on its own line, followed by the content, followed by "---" on its own line:
+Provide exactly these 5 sections. Start each section on a new line with its number and title, then a blank line, then the content, then "---" on its own line.
 
-**1. Squad problems**
-- [one bullet per player with an issue: name, problem, stat]
-- [...]
----
-**2. Transfer strategy**
-[A short paragraph: state clearly whether to use transfers now, roll, or take a hit, and the overall reasoning.]
----
-**3. Specific transfers**
-- [PLAYER OUT (POS) → PLAYER IN (POS) — one sentence justification with stats]
-- [...]
----
-**4. Chip strategy**
-[ONLY mention chips listed as AVAILABLE. If none available, write: No chips available this season.]
----
-**5. Captain pick**
-[Name, EP, and their team's next opponent from the FDR column. Do NOT say a player plays against their own team.]
+1. Squad problems
+One bullet per player with an issue.
+
+2. Transfer strategy
+One short paragraph.
+
+3. Specific transfers
+One bullet per transfer: PLAYER OUT (POS) → PLAYER IN (POS) — one sentence justification with stats.
+
+4. Chip strategy
+Only mention chips listed as AVAILABLE. If none, write: No chips available this season.
+
+5. Captain pick
+Name, EP, and their next opponent from the FDR column.
 ---"""
 
 
@@ -287,81 +286,29 @@ def get_recommendation(context: dict, free_transfers: int = 1) -> str:
 
     return data["choices"][0]["message"]["content"]
 
-def calculate_hit_value(
-    player_out: str,
-    player_in: str,
-    context: dict
-) -> str:
-    """
-    Ask the LLM to quantify whether a -4 hit is worth it
-    for a specific transfer.
-    """
-    squad = context["squad"]
-    out_data = squad[squad["name"] == player_out].iloc[0]
-
-    all_players = context.get("player_df", pd.DataFrame())
-    in_data = all_players[
-        all_players["name"] == player_in
-    ].iloc[0] if not all_players.empty else None
-
-    prompt = f"""Calculate whether taking a -4 point hit is worth it for this transfer:
-
-OUT: {player_out} — Form: {out_data['form']}, EP Next: {out_data['ep_next']}, 
-     FDR next 5 GWs: {out_data['fdrs']}, Status: {out_data['status']}
-
-IN:  {player_in} — Form: {in_data['form'] if in_data is not None else 'unknown'}, 
-     EP Next: {in_data['ep_next'] if in_data is not None else 'unknown'},
-     FDR next 5 GWs: {in_data['fdrs'] if in_data is not None else 'unknown'}
-
-Provide:
-1. Expected points gained this GW from the transfer
-2. Expected points over next 3 GWs
-3. Breakeven analysis — how many GWs to recover the -4?
-4. Verdict: worth it or not, and why
-
-Be specific with numbers. Format as a brief structured analysis."""
-
-    payload = {
-        "model": MODEL,
-        "messages": [
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": prompt}
-        ],
-        "max_tokens": 800
-    }
-
-    headers = {
-        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-        "Content-Type": "application/json",
-        "HTTP-Referer": "http://localhost",
-    }
-
-    response = requests.post(
-        "https://openrouter.ai/api/v1/chat/completions",
-        json=payload,
-        headers=headers,
-        timeout=30
-    )
-    response.raise_for_status()
-    return response.json()["choices"][0]["message"]["content"]
-
 def get_hit_analysis(
     player_out: pd.Series,
     player_in: pd.Series,
-    context: dict
+    context: dict,
+    is_free_transfer: bool = True
 ) -> str:
-    prompt = f"""FPL transfer analysis. Be extremely concise — maximum 4 bullet points total.
+    transfer_type = (
+        "FREE TRANSFER (no point cost)"
+        if is_free_transfer
+        else "HIT TRANSFER (costs -4 points)"
+    )
 
+    prompt = f"""FPL transfer analysis. Be extremely concise — maximum 4 bullet points.
+
+Transfer type: {transfer_type}
 OUT: {player_out['name']} | EP: {player_out['ep_next']} | Form: {player_out['form']} | Fixtures: {player_out['fdrs']} | Status: {player_out['status']}
 IN:  {player_in['name']} | EP: {player_in['ep_next']} | Form: {player_in['form']} | Fixtures: {player_in['fdrs']}
 Bank after: £{round(context['bank'] - (float(player_in['price']) - float(player_out['price'])), 1)}m
-Free transfers left: {context.get('free_transfers', 1)}
 
 Provide exactly:
 - EP gain this GW: [number]
-- Breakeven: [X GWs] (or "Free transfer — no breakeven needed")
-- Biggest risk: [one sentence]
-"""
+- Breakeven: {"N/A — free transfer" if is_free_transfer else "[X GWs to recover -4pts]"}
+- Biggest risk: [one sentence]"""
 
     payload = {
         "model": MODEL,
