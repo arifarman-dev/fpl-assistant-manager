@@ -7,7 +7,7 @@ import pandas as pd
 from transformer import build_player_dataframe
 from llm import get_hit_analysis
 
-st.set_page_config(page_title="Transfer Planner", page_icon="🎯")
+st.set_page_config(page_title="Transfer Planner", page_icon="🎯", layout="centered")
 
 st.title("🎯 Transfer Planner")
 st.caption(

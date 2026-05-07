@@ -298,17 +298,17 @@ def get_hit_analysis(
         else "HIT TRANSFER (costs -4 points)"
     )
 
-    prompt = f"""FPL transfer analysis. Be extremely concise — maximum 4 bullet points.
+    prompt = f"""FPL transfer analysis. Be extremely concise — exactly 3 bullet points, no more.
 
 Transfer type: {transfer_type}
 OUT: {player_out['name']} | EP: {player_out['ep_next']} | Form: {player_out['form']} | Fixtures: {player_out['fdrs']} | Status: {player_out['status']}
 IN:  {player_in['name']} | EP: {player_in['ep_next']} | Form: {player_in['form']} | Fixtures: {player_in['fdrs']}
 Bank after: £{round(context['bank'] - (float(player_in['price']) - float(player_out['price'])), 1)}m
 
-Provide exactly:
-- EP gain this GW: [number]
-- Breakeven: {"N/A — free transfer" if is_free_transfer else "[X GWs to recover -4pts]"}
-- Biggest risk: [one sentence]"""
+You MUST respond in exactly this format with bullet points, no deviations:
+- EP gain this GW: [number only, e.g. +3.5]
+- Breakeven: {"N/A — free transfer" if is_free_transfer else "[X GWs]"}
+- Biggest risk: [one sentence maximum]"""
 
     payload = {
         "model": MODEL,

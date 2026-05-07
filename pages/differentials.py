@@ -9,7 +9,7 @@ from llm import get_differential_insight
 
 st.set_page_config(page_title="Differentials", page_icon="🔍")
 
-if "data" not in st.session_state:
+if not st.session_state.get("data"):
     st.info("👈 Please load your team in the Transfer Hub first.")
     st.stop()
 
