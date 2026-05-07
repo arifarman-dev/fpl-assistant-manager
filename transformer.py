@@ -202,17 +202,27 @@ def get_transfer_candidates(
         top4_elo_teams = {name for name, elo in elo_map.items() if elo >= 1900}
 
         def elo_adjusted_score(row):
+            import re
+            fdrs_str = row["fdrs"] if row["fdrs"] else ""
+
+            gw_numbers = re.findall(r'GW(\d+)', fdrs_str)
+            is_dgw = len(gw_numbers) > len(set(gw_numbers))
+            ep_normalised = row["ep_next"] / 1.6 if is_dgw else row["ep_next"]
+
             base = (
                 row["form"] * 0.35 +
-                row["ep_next"] * 0.45 +
+                ep_normalised * 0.45 +
                 (6 - row["avg_fdr"]) * 0.12 +
                 minutes_factor[row.name] * 0.08
             )
-            fdrs_str = row["fdrs"]
+
             if fdrs_str and fdrs_str != "n/a":
+                fdr_values = [int(x) for x in re.findall(r'\((\d)\)', fdrs_str)]
+                hard_fixtures = sum(1 for f in fdr_values if f >= 4)
+                base -= hard_fixtures * 0.12
                 for top_team in top4_elo_teams:
-                    if top_team in fdrs_str:  # check all fixtures
-                        base -= 0.15
+                    if top_team in fdrs_str:
+                        base -= 0.20
                         break
             return base
 

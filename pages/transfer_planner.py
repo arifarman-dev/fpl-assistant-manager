@@ -123,18 +123,31 @@ def available_replacements(
     top4_elo = {n for n, e in elo_map.items() if e >= 1900} if elo_map else set()
 
     def score_row(row):
+        import re
+        fdrs_str = str(row.get("fdrs", ""))
+
+        # Normalise ep_next for DGW players — divide by 1.6 to get
+        # single-game equivalent so DGW doesn't artificially inflate score
+        gw_numbers = re.findall(r'GW(\d+)', fdrs_str)
+        is_dgw = len(gw_numbers) > len(set(gw_numbers))
+        ep_normalised = row["ep_next"] / 1.6 if is_dgw else row["ep_next"]
+
         base = (
             row["form"] * 0.35 +
-            row["ep_next"] * 0.45 +
+            ep_normalised * 0.45 +
             (6 - (row["avg_fdr"] if pd.notna(row["avg_fdr"]) else 3)) * 0.12 +
             (min(row["minutes"], 2700) / 2700) * 0.08
         )
-        fdrs_str = str(row.get("fdrs", ""))
-        if fdrs_str and fdrs_str != "n/a" and top4_elo:
-            for elite in top4_elo:
-                if elite in fdrs_str:
-                    base -= 0.15
-                    break
+
+        if fdrs_str and fdrs_str != "n/a":
+            fdr_values = [int(x) for x in re.findall(r'\((\d)\)', fdrs_str)]
+            hard_fixtures = sum(1 for f in fdr_values if f >= 4)
+            base -= hard_fixtures * 0.12
+            if top4_elo:
+                for elite in top4_elo:
+                    if elite in fdrs_str:
+                        base -= 0.20
+                        break
         return base
 
     pool["score"]      = pool.apply(score_row, axis=1)
@@ -323,15 +336,14 @@ for pos in POSITIONS:
                              use_container_width=True):
                     st.session_state["tp_selling"] = None
                     st.rerun()
-            elif was_sold:
-                # Find the original player this slot maps to
-                original_out = next(
-                    (t["out"]["name"] for t in transfers
-                     if t["in"]["name"] == p["name"]),
-                    p["name"]
-                )
-                if st.button("↩ Undo", key=f"undo_card_{p['name']}",
-                             use_container_width=True):
+            elif was_bought:
+                # This card is a replacement — show undo to revert
+                if st.button(
+                    "↩ Undo",
+                    key=f"undo_card_{p['name']}",
+                    use_container_width=True,
+                    help=f"Revert this transfer"
+                ):
                     idx = next(
                         (i for i, t in enumerate(transfers)
                          if t["in"]["name"] == p["name"]),
