@@ -83,8 +83,6 @@ df = pd.DataFrame(rows)
 for col in ["Proj Goals", "CS %", "Win %", "Over 2.5 %"]:
     df[col] = pd.to_numeric(df[col], errors="coerce")
 
-# ── page ──────────────────────────────────────────────────────────────────────
-
 st.title(f"📊 GW{upcoming_gw} Projections")
 st.caption(
     "Consensus bookmaker probabilities for the upcoming gameweek. "
@@ -97,7 +95,6 @@ if df.empty or df["Proj Goals"].isna().all():
 
 col_goals, col_cs = st.columns(2)
 
-# ── Projected Goals ───────────────────────────────────────────────────────────
 with col_goals:
     st.subheader("⚔️ Projected Goals")
     st.caption("Per-team expected goals, split from match total by win probability.")
@@ -138,7 +135,6 @@ with col_goals:
             unsafe_allow_html=True
         )
 
-# ── Clean Sheet % ─────────────────────────────────────────────────────────────
 with col_cs:
     st.subheader("🛡️ Clean Sheet %")
     st.caption("Estimated from opponent's projected goals. Key for GK & DEF picks.")

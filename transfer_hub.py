@@ -25,10 +25,7 @@ st.set_page_config(
 )
 
 st.title("⚽ FPL Assistant Manager")
-st.markdown("""
-Your AI-powered FPL edge. Built for managers who want data-driven decisions, 
-not gut feelings.
-""")
+st.markdown("""Your AI-powered FPL edge""")
 
 col1, col2, col3, col4 = st.columns(4)
 with col1:

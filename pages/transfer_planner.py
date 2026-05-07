@@ -11,8 +11,8 @@ st.set_page_config(page_title="Transfer Planner", page_icon="🎯", layout="cent
 
 st.title("🎯 Transfer Planner")
 st.caption(
-    "Plan your transfers step by step. "
-    "Sell a player, pick a replacement — including over-budget targets. "
+    "Plan your transfers."
+    "Sell a player, pick a replacement."
     "Budget and hit cost update in real time."
 )
 
@@ -28,7 +28,6 @@ bank           = context["bank"]
 bootstrap      = data["bootstrap"]
 player_df      = build_player_dataframe(data["bootstrap"], data["fixtures"])
 
-# ── session state init ────────────────────────────────────────────────────────
 if "tp_transfers" not in st.session_state:
     st.session_state["tp_transfers"] = []
 
@@ -40,7 +39,6 @@ if "tp_ai" not in st.session_state:
 
 transfers = st.session_state["tp_transfers"]
 
-# ── derived state ─────────────────────────────────────────────────────────────
 def current_squad() -> pd.DataFrame:
     squad = original_squad.copy()
     for t in transfers:
@@ -158,8 +156,6 @@ def available_replacements(
         ["affordable", "score"], ascending=[False, False]
     ).reset_index(drop=True)
 
-
-# ── summary bar ───────────────────────────────────────────────────────────────
 st.markdown("---")
 budget_val = pooled_bank()
 budget_colour = (
@@ -188,7 +184,6 @@ if budget_val < 0:
         f"Sell another player to free up funds before this plan is executable."
     )
 
-# ── planned transfers ─────────────────────────────────────────────────────────
 if transfers:
     st.markdown("---")
     st.markdown("#### Planned transfers")
@@ -250,7 +245,6 @@ if transfers:
         st.session_state["tp_ai"]        = None
         st.rerun()
 
-# ── squad view ────────────────────────────────────────────────────────────────
 st.markdown("---")
 selling_name = st.session_state["tp_selling"]
 live_squad   = current_squad()
@@ -355,7 +349,6 @@ for pos in POSITIONS:
                         st.session_state["tp_ai"] = None
                         st.rerun()
 
-# ── replacement picker ────────────────────────────────────────────────────────
 if selling_name:
     selling_rows = original_squad[original_squad["name"] == selling_name]
     chain_original_name = None
@@ -390,7 +383,6 @@ if selling_name:
         affordable   = pool[pool["affordable"]].head(12)
         over_budget  = pool[~pool["affordable"]].head(8)
 
-        # ── Affordable options ──
         if not affordable.empty:
             st.markdown("**Within budget:**")
             n = min(4, len(affordable))
@@ -449,7 +441,6 @@ if selling_name:
                             st.session_state["tp_selling"] = None
                             st.rerun()
 
-        # ── Over-budget options ──
         if not over_budget.empty:
             st.markdown("---")
             st.markdown(
@@ -521,7 +512,6 @@ if selling_name:
                             st.session_state["tp_selling"] = None
                             st.rerun()
 
-# ── final verdict ─────────────────────────────────────────────────────────────
 if transfers:
     st.markdown("---")
     st.subheader("📊 Plan summary")
