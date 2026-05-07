@@ -5,6 +5,7 @@ load_dotenv()
 
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 MODEL = "google/gemini-2.5-flash"
+MODEL_FAST = "mistralai/mistral-small-3.2-24b-instruct"
 FPL_BASE_URL = "https://fantasy.premierleague.com/api"
 FPL_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"

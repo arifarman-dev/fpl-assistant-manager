@@ -2,7 +2,7 @@
 import requests
 import pandas as pd
 from config import OPENROUTER_API_KEY, MODEL
-
+from config import OPENROUTER_API_KEY, MODEL, MODEL_FAST
 
 SYSTEM_PROMPT = """You are an expert Fantasy Premier League (FPL) assistant manager.
 
@@ -298,25 +298,31 @@ def get_hit_analysis(
         else "HIT TRANSFER (costs -4 points)"
     )
 
-    prompt = f"""FPL transfer analysis. Be extremely concise — exactly 3 bullet points, no more.
+    out_name = str(player_out['name'])
+    in_name  = str(player_in['name'])
+
+    prompt = f"""You are an FPL analyst. Give exactly 3 bullet points analysing this transfer.
 
 Transfer type: {transfer_type}
-OUT: {player_out['name']} | EP: {player_out['ep_next']} | Form: {player_out['form']} | Fixtures: {player_out['fdrs']} | Status: {player_out['status']}
-IN:  {player_in['name']} | EP: {player_in['ep_next']} | Form: {player_in['form']} | Fixtures: {player_in['fdrs']}
-Bank after: £{round(context['bank'] - (float(player_in['price']) - float(player_out['price'])), 1)}m
+Selling: {out_name} | EP next GW: {player_out['ep_next']} | Form: {player_out['form']} | Fixtures: {player_out['fdrs']}
+Buying:  {in_name} | EP next GW: {player_in['ep_next']} | Form: {player_in['form']} | Fixtures: {player_in['fdrs']}
 
-You MUST respond in exactly this format with bullet points, no deviations:
-- EP gain this GW: [number only, e.g. +3.5]
-- Breakeven: {"N/A — free transfer" if is_free_transfer else "[X GWs]"}
-- Biggest risk: [one sentence maximum]"""
+Rules:
+- Only mention {out_name} and {in_name} by name, no other players.
+- Do not discuss budget or cost.
+- Base all fixture comments on the fixture data above only.
+
+Bullet points must be exactly:
+- EP gain this GW: [write the number {round(float(player_in['ep_next']) - float(player_out['ep_next']), 1):+.1f}]
+- Breakeven: {"N/A — free transfer" if is_free_transfer else f"approximately {round(4 / max(float(player_in['ep_next']) - float(player_out['ep_next']), 0.1), 1)} GWs"}
+- Biggest risk of bringing in {in_name}: [one sentence about their upcoming fixtures or form]"""
 
     payload = {
-        "model": MODEL,
+        "model": MODEL_FAST,
         "messages": [
-            {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": prompt}
         ],
-        "max_tokens": 600
+        "max_tokens": 200
     }
 
     headers = {
