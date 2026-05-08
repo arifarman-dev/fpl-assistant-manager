@@ -240,19 +240,19 @@ IMPORTANT RULES:
 
 Provide exactly these 5 sections. Start each section on a new line with its number and title, then a blank line, then the content, then "---" on its own line.
 
-1. Squad problems
+1. Squad problems:
 One bullet per player with an issue.
 
-2. Transfer strategy
+2. Transfer strategy:
 One short paragraph.
 
-3. Specific transfers
+3. Specific transfers:
 One bullet per transfer: PLAYER OUT (POS) → PLAYER IN (POS) — one sentence justification with stats.
 
-4. Chip strategy
+4. Chip strategy:
 Only mention chips listed as AVAILABLE. If none, write: No chips available this season.
 
-5. Captain pick
+5. Captain pick:
 Name, EP, and their next opponent from the FDR column.
 ---"""
 
